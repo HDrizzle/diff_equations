@@ -35,7 +35,7 @@ impl Plugin for MainPlugin {
     }
 }
 
-pub fn main<const N: usize, T: StaticDifferentiator<N> + Clone + Send + Sync + 'static>(stepper: Stepper<N, T>) {
+pub fn main<T: StaticDifferentiator + Clone + Send + Sync + 'static>(stepper: Stepper<T>) {
     let mut app = App::new();
     app.add_plugins((
         DefaultPlugins.set(WindowPlugin {

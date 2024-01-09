@@ -6,7 +6,7 @@ Inspired by: Computers pattern chaos and beauty, by Clifford A Pickover. Pg 216
 use std::ops;
 use bevy::ecs::system::Resource;
 use image::{RgbImage, Rgb};
-use nalgebra::{Scalar, base::{Vector2, Vector3}};
+use nalgebra::{Scalar, base::{Vector2, Vector3, OVector, dimension::Dyn}};
 
 pub mod electronics;
 pub mod gui;
@@ -20,6 +20,7 @@ pub mod prelude {
 	pub type UInt = u32;
 	pub type V2 = Vector2<Float>;
 	pub type V3 = Vector3<Float>;
+	pub type VDyn = OVector<Float, Dyn>;
 	pub type ImgV2 = Vector2<u32>;
 	pub type IntV2 = Vector2<Int>;
 	pub fn imgv2_to_v2(imgv2: ImgV2) -> V2 {
@@ -53,7 +54,6 @@ pub mod prelude {
 		)
 	}
 	pub use crate::{
-		GenericVector,
 		NDimensionalDerivative,
 		StaticDifferentiator,
 		PlotVariableIndices,
@@ -67,7 +67,7 @@ pub mod prelude {
 
 use prelude::*;
 
-#[derive(Clone, PartialEq, Debug)]
+/*#[derive(Clone, PartialEq, Debug)]
 pub struct GenericVector<const N: usize> (
 	pub [Float; N]
 );
@@ -108,44 +108,50 @@ impl<const N: usize> GenericVector<N> {
 			out
 		)
 	}
-	pub fn get_plot_variables(&self, plot_variable_indices: &PlotVariableIndices) -> Vec<Float> {
+	
+}*/
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct NDimensionalDerivative (
+	pub VDyn
+);
+
+pub struct PlotVariableIndices (// Array of indices corresponding to `GeneralNumericState` array
+	pub Vec<usize>
+);
+
+impl PlotVariableIndices {
+	pub fn get_plot_variables(&self, state: &VDyn) -> Vec<Float> {
 		let mut out = Vec::<Float>::new();
-		for i in &plot_variable_indices.0 {
-			assert!(i < &N, "Index ({}) from plot variable indices must be < length of this generic vector ({})", i, N);
-			out.push(self.0[*i]);
+		for i in &self.0 {
+			out.push(state[*i]);
 		}
 		// Done
 		out
 	}
 }
 
-#[derive(Clone, PartialEq, Debug)]
-pub struct NDimensionalDerivative<const N: usize> (
-	pub GenericVector<N>
-);
-
-pub struct PlotVariableIndices(// Array of indices corresponding to `GeneralNumericState` array
-	pub Vec<usize>
-);
-
-pub trait StaticDifferentiator<const N: usize>: Clone + Send {// N: size of display variable array, M: size of general numeric state
-	fn differentiate(&mut self, state: &GenericVector<N>) -> NDimensionalDerivative<N>;
+pub trait StaticDifferentiator: Clone + Send {// N: size of display variable array, M: size of general numeric state
+	fn beginning_state_size(&self) -> usize;
+	fn begining_state(&self) -> VDyn;
+	fn differentiate(&mut self, state: &VDyn) -> NDimensionalDerivative;
 }
 
 #[derive(Resource)]
-pub struct Stepper<const N: usize, T: StaticDifferentiator<N>> {
+pub struct Stepper<T: StaticDifferentiator> {
 	differentiator: T,
 	state_vec_len_limit: Float,
-	pub state: GenericVector<N>,
+	pub state: VDyn,
 	dt: Float
 }
 
-impl<const N: usize, T: StaticDifferentiator<N>> Stepper<N, T> {
+impl<T: StaticDifferentiator> Stepper<T> {
 	pub fn new(differentiator: T, state_vec_len_limit: Float, dt: Float) -> Self {
+		let state = differentiator.begining_state();
 		Self {
 			differentiator,
 			state_vec_len_limit,
-			state: GenericVector::<N>::new(),
+			state,
 			dt
 		}
 	}
@@ -164,12 +170,12 @@ impl<const N: usize, T: StaticDifferentiator<N>> Stepper<N, T> {
 			final_state
 		}*/
 		{
-			let mut diff: NDimensionalDerivative<N> = self.differentiator.differentiate(&self.state);
-			let new_state: GenericVector<N> = self.state.add(diff.0.mul_by_scalar(self.dt));
+			let mut diff: NDimensionalDerivative = self.differentiator.differentiate(&self.state);
+			let new_state: VDyn = self.state.clone() + (diff.0 * self.dt);
 			new_state
 		};
 		// Done
-		if final_state.len() >= self.state_vec_len_limit {
+		if final_state.magnitude() >= self.state_vec_len_limit {// I'm pretty sure magnitude works in this context, but not certain
 			return Err(format!("Vector magnitude of state met or exceeded limit of {}", self.state_vec_len_limit));
 		}
 		self.state = final_state;
@@ -177,8 +183,8 @@ impl<const N: usize, T: StaticDifferentiator<N>> Stepper<N, T> {
 	}
 }
 
-pub fn render_image<const N: usize, T: StaticDifferentiator<N>>(
-	mut stepper: Stepper<N, T>,
+pub fn render_image<T: StaticDifferentiator>(
+	mut stepper: Stepper<T>,
 	plot_indices: &PlotVariableIndices,
 	image: &mut RgbImage,
 	scale: Float,// Px per world units, gets larger when zoomed in
@@ -196,7 +202,7 @@ pub fn render_image<const N: usize, T: StaticDifferentiator<N>>(
 	};
 	for _ in 0..num_iterations {
 		stepper.step();
-		let pos = stepper.state.get_plot_variables(plot_indices);
+		let pos = plot_indices.get_plot_variables(&stepper.state);
 		let px_pos = to_px(V2::new(pos[0], pos[1]));
 		let (x, y) = (px_pos.x, px_pos.y);
 		if x < image.width() as Int && x >= 0 && y < image.height() as Int && y >= 0 {

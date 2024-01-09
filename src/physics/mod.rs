@@ -3,24 +3,24 @@ use crate::prelude::*;
 
 /*#[derive(Clone, Debug)]
 pub struct ObjectStatic {
-    mass: Float
+	mass: Float
 }
 
 #[derive(Clone, Debug)]
 pub struct Object<const N: usize> {
-    static_: ObjectStatic,
-    pos: GenericVector<N>
+	static_: ObjectStatic,
+	pos: GenericVector<N>
 }
 
 #[derive(Clone, Debug)]
 pub struct System<const N: usize> {
-    objects: Vec<Object<N>>
+	objects: Vec<Object<N>>
 }
 
 impl<const N: usize> StaticDifferentiator<{ N * 2 }> for System<N> {
-    fn differentiate(&mut self, state: &GenericVector<{N*2}>) -> NDimensionalDerivative<{N*2}> {
-        
-    }
+	fn differentiate(&mut self, state: &GenericVector<{N*2}>) -> NDimensionalDerivative<{N*2}> {
+		
+	}
 }*/
 
 #[derive(Clone)]
@@ -29,45 +29,50 @@ pub struct StaticSpringAndMass {
 	pub mass: Float
 }
 
-impl StaticDifferentiator<2> for StaticSpringAndMass {
-	fn differentiate(&mut self, state: &GenericVector<2>) -> NDimensionalDerivative<2> {
+impl StaticDifferentiator for StaticSpringAndMass {
+	fn beginning_state_size(&self) -> usize {
+		2
+	}
+	fn begining_state(&self) -> VDyn {
+		VDyn::from_vec(vec![0.0, 1.0])
+	}
+	fn differentiate(&mut self, state: &VDyn) -> NDimensionalDerivative {
 		// In this case there will be 2 plot variables: x and and dx
 		// Force = -kx
-		let force = -self.k * state.0[0];
+		let force = -self.k * state[0];
 		// Acc = force / mass
 		let acc = force / self.mass;
 		// Done
-		NDimensionalDerivative(GenericVector([
-			state.0[1],
-			acc
-			/*state.0[1],
-			-state.0[0]*/
-		]))
+		NDimensionalDerivative(VDyn::from_vec(vec![
+				state[1],
+				acc
+			]
+		))
 	}
 }
 
 impl Default for StaticSpringAndMass {
-    fn default() -> Self {
-        Self {
-            k: 1.0,
-            mass: 1.0
-        }
-    }
+	fn default() -> Self {
+		Self {
+			k: 1.0,
+			mass: 1.0
+		}
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 	#[test]
 	fn differentiation() {
 		let mut d = StaticSpringAndMass{
-            k: 1.0,
-            mass: 1.0
-        };
-		let state = GenericVector::<2>([0.0, 1.0]);
+			k: 1.0,
+			mass: 1.0
+		};
+		let state = VDyn::from_vec(vec![0.0, 1.0]);
 		assert_eq!(
 			d.differentiate(&state),
-			NDimensionalDerivative(GenericVector([1.0, 0.0]))
+			NDimensionalDerivative(VDyn::from_vec(vec![1.0, 0.0]))
 		);
 	}
 }
