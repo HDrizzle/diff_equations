@@ -67,50 +67,6 @@ pub mod prelude {
 
 use prelude::*;
 
-/*#[derive(Clone, PartialEq, Debug)]
-pub struct GenericVector<const N: usize> (
-	pub [Float; N]
-);
-
-impl<const N: usize> GenericVector<N> {
-	pub fn average(&mut self, other: Self) {
-		let mut out = [0.0; N];
-		for (i, n0) in self.0.iter().enumerate() {
-			out[i] = (n0 + other.0[i]);
-		}
-		self.0 = out;
-	}
-	pub fn len(&self) -> Float {
-		let mut sum = 0.0;
-		for n in &self.0 {
-			sum += n.powf(2.0);
-		}
-		sum.powf(0.5)
-	}
-	pub fn new() -> Self {
-		Self([0.0; N])
-	}
-	pub fn mul_by_scalar(&self, scalar: Float) -> Self {
-		let mut out = [0.0; N];
-		for (i, n0) in self.0.iter().enumerate() {
-			out[i] = self.0[i] * scalar;
-		}
-		Self (
-			out
-		)
-	}
-	pub fn add(&self, other: Self) -> Self {
-		let mut out = [0.0; N];
-		for (i, n0) in self.0.iter().enumerate() {
-			out[i] = self.0[i] + other.0[i];
-		}
-		Self (
-			out
-		)
-	}
-	
-}*/
-
 #[derive(Clone, PartialEq, Debug)]
 pub struct NDimensionalDerivative (
 	pub VDyn
@@ -131,10 +87,10 @@ impl PlotVariableIndices {
 	}
 }
 
-pub trait StaticDifferentiator: Clone + Send {// N: size of display variable array, M: size of general numeric state
-	fn beginning_state_size(&self) -> usize;
+pub trait StaticDifferentiator {
+	fn state_representation_vec_size(&self) -> usize;
 	fn begining_state(&self) -> VDyn;
-	fn differentiate(&mut self, state: &VDyn) -> NDimensionalDerivative;
+	fn differentiate(&self, state: &VDyn) -> NDimensionalDerivative;
 }
 
 #[derive(Resource)]
@@ -156,24 +112,23 @@ impl<T: StaticDifferentiator> Stepper<T> {
 		}
 	}
 	pub fn step(&mut self) -> Result<(), String> {
-		let final_state = /*{
+		let final_state = {
 			// Steps state by 2/3 twice and averages result after each step, I figured this out a while ago and it is very stable and prevents oscillation
 			// Step 1
-			let mut diff1: NDimensionalDerivative<N> = self.differentiator.differentiate(&self.state);
-			let state1: GenericVector<N> = self.state.add(diff1.0.mul_by_scalar(self.dt * (2.0 / 3.0)));
+			let mut diff1: NDimensionalDerivative = self.differentiator.differentiate(&self.state);
+			let state1: VDyn = self.state.clone() + (diff1.0 * self.dt * (2.0 / 3.0));
 			// Step 2
-			let diff2: NDimensionalDerivative<N> = self.differentiator.differentiate(&state1);
-			let state2: GenericVector<N> = state1.add(diff2.0.mul_by_scalar(self.dt * (2.0 / 3.0)));
+			let diff2: NDimensionalDerivative = self.differentiator.differentiate(&state1);
+			let state2: VDyn = state1.clone() + (diff2.0 * self.dt * (2.0 / 3.0));
 			// Average state
-			let mut final_state = state1;
-			final_state.average(state2);
+			let mut final_state = (state1 + state2) / 2.0;
 			final_state
-		}*/
-		{
+		}
+		/*{
 			let mut diff: NDimensionalDerivative = self.differentiator.differentiate(&self.state);
 			let new_state: VDyn = self.state.clone() + (diff.0 * self.dt);
 			new_state
-		};
+		}*/;
 		// Done
 		if final_state.magnitude() >= self.state_vec_len_limit {// I'm pretty sure magnitude works in this context, but not certain
 			return Err(format!("Vector magnitude of state met or exceeded limit of {}", self.state_vec_len_limit));
