@@ -6,7 +6,7 @@ Inspired by: Computers pattern chaos and beauty, by Clifford A Pickover. Pg 216
 use std::ops;
 use bevy::ecs::system::Resource;
 use image::{RgbImage, Rgb};
-use nalgebra;
+use nalgebra::{Scalar, base::{Vector2, Vector3}};
 
 pub mod electronics;
 pub mod spring;
@@ -18,9 +18,10 @@ pub mod prelude {
 	pub type Float = f64;
 	pub type Int = i32;
 	pub type UInt = u32;
-	pub type V2 = nalgebra::base::Vector2<Float>;
-	pub type V3 = nalgebra::base::Vector3<Float>;
-	pub type ImgV2 = nalgebra::base::Vector2<u32>;
+	pub type V2 = Vector2<Float>;
+	pub type V3 = Vector3<Float>;
+	pub type ImgV2 = Vector2<u32>;
+	pub type IntV2 = Vector2<Int>;
 	pub fn imgv2_to_v2(imgv2: ImgV2) -> V2 {
 		V2::new(
 			imgv2.x.into(),
@@ -31,6 +32,24 @@ pub mod prelude {
 		ImgV2::new(
 			v2.x as u32,
 			v2.y as u32
+		)
+	}
+	pub fn v2_to_intv2(v2: V2) -> IntV2 {
+		IntV2::new(
+			v2.x as Int,
+			v2.y as Int
+		)
+	}
+	pub fn intv2_to_v2(v2: IntV2) -> V2 {
+		V2::new(
+			v2.x as Float,
+			v2.y as Float
+		)
+	}
+	pub fn imgv2_to_intv2(imgv2: ImgV2) -> IntV2 {
+		IntV2::new(
+			imgv2.x as Int,
+			imgv2.y as Int
 		)
 	}
 	pub use crate::{
@@ -46,7 +65,7 @@ pub mod prelude {
 
 use prelude::*;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct GenericVector<const N: usize> (
 	pub [Float; N]
 );
@@ -98,7 +117,7 @@ impl<const N: usize> GenericVector<N> {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct NDimensionalDerivative<const N: usize> (
 	pub GenericVector<N>
 );
@@ -107,20 +126,20 @@ pub struct PlotVariableIndices(// Array of indices corresponding to `GeneralNume
 	pub Vec<usize>
 );
 
-pub trait StaticDifferentiator<const N: usize> {// N: size of display variable array, M: size of general numeric state
+pub trait StaticDifferentiator<const N: usize>: Clone + Send {// N: size of display variable array, M: size of general numeric state
 	fn new() -> Self;
 	fn differentiate(&mut self, state: &GenericVector<N>) -> NDimensionalDerivative<N>;
 }
 
 #[derive(Resource)]
-pub struct Stepper<const N: usize, T: StaticDifferentiator<N> + Clone + Send> {
+pub struct Stepper<const N: usize, T: StaticDifferentiator<N>> {
 	differentiator: T,
 	state_vec_len_limit: Float,
 	pub state: GenericVector<N>,
 	dt: Float
 }
 
-impl<const N: usize, T: StaticDifferentiator<N> + Clone + Send> Stepper<N, T> {
+impl<const N: usize, T: StaticDifferentiator<N>> Stepper<N, T> {
 	pub fn new(state_vec_len_limit: Float, dt: Float) -> Self {
 		Self {
 			differentiator: T::new(),
@@ -130,16 +149,24 @@ impl<const N: usize, T: StaticDifferentiator<N> + Clone + Send> Stepper<N, T> {
 		}
 	}
 	pub fn step(&mut self) -> Result<(), String> {
-		// Steps state by 2/3 twice and averages result after each step, I figured this out a while ago and it is very stable and prevents oscillation
-		// Step 1
-		let mut diff1: NDimensionalDerivative<N> = self.differentiator.differentiate(&self.state);
-		let state1: GenericVector<N> = self.state.add(diff1.0.mul_by_scalar(self.dt * (2.0 / 3.0)));
-		// Step 2
-		let diff2: NDimensionalDerivative<N> = self.differentiator.differentiate(&state1);
-		let state2: GenericVector<N> = state1.add(diff2.0.mul_by_scalar(self.dt * (2.0 / 3.0)));
-		// Average state
-		let mut final_state = state1;
-		final_state.average(state2);
+		let final_state = /*{
+			// Steps state by 2/3 twice and averages result after each step, I figured this out a while ago and it is very stable and prevents oscillation
+			// Step 1
+			let mut diff1: NDimensionalDerivative<N> = self.differentiator.differentiate(&self.state);
+			let state1: GenericVector<N> = self.state.add(diff1.0.mul_by_scalar(self.dt * (2.0 / 3.0)));
+			// Step 2
+			let diff2: NDimensionalDerivative<N> = self.differentiator.differentiate(&state1);
+			let state2: GenericVector<N> = state1.add(diff2.0.mul_by_scalar(self.dt * (2.0 / 3.0)));
+			// Average state
+			let mut final_state = state1;
+			final_state.average(state2);
+			final_state
+		}*/
+		{
+			let mut diff: NDimensionalDerivative<N> = self.differentiator.differentiate(&self.state);
+			let new_state: GenericVector<N> = self.state.add(diff.0.mul_by_scalar(self.dt));
+			new_state
+		};
 		// Done
 		if final_state.len() >= self.state_vec_len_limit {
 			return Err(format!("Vector magnitude of state met or exceeded limit of {}", self.state_vec_len_limit));
@@ -149,7 +176,7 @@ impl<const N: usize, T: StaticDifferentiator<N> + Clone + Send> Stepper<N, T> {
 	}
 }
 
-pub fn render_image<const N: usize, T: StaticDifferentiator<N> + Clone + Send>(
+pub fn render_image<const N: usize, T: StaticDifferentiator<N>>(
 	mut stepper: Stepper<N, T>,
 	plot_indices: &PlotVariableIndices,
 	image: &mut RgbImage,
@@ -159,19 +186,20 @@ pub fn render_image<const N: usize, T: StaticDifferentiator<N> + Clone + Send>(
 	fill_color: Rgb<u8>
 ) {
 	assert_eq!(plot_indices.0.len(), 2, "Plot indices must have length of 2 for image rendering");
-	let center = ImgV2::new(image.width() / 2, image.height() / 2);
+	let size = ImgV2::new(image.width(), image.height());
+	let center = size / 2;
 	// Temp function to translate into pixel units
-	let to_px = |input: V2| -> ImgV2 {
-		//let translated = (input + center) * scale;
-		v2_to_imgv2(input) + center
+	let to_px = |input: V2| -> IntV2 {
+		let final_y_up = v2_to_intv2(input * scale) + imgv2_to_intv2(center);// TODO: apply origin
+		IntV2::new(final_y_up.x, size.y as Int - final_y_up.y)
 	};
 	for _ in 0..num_iterations {
 		stepper.step();
 		let pos = stepper.state.get_plot_variables(plot_indices);
 		let px_pos = to_px(V2::new(pos[0], pos[1]));
 		let (x, y) = (px_pos.x, px_pos.y);
-		if x < image.width() && x >= 0 && y < image.height() && y >= 0 {
-			image.put_pixel(px_pos.x, px_pos.y, fill_color);
+		if x < image.width() as Int && x >= 0 && y < image.height() as Int && y >= 0 {
+			image.put_pixel(px_pos.x as u32, px_pos.y as u32, fill_color);
 		}
 	}
 }

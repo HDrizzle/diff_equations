@@ -15,7 +15,7 @@ impl StaticDifferentiator<2> for StaticSpringAndMass {
 		}
 	}
 	fn differentiate(&mut self, state: &GenericVector<2>) -> NDimensionalDerivative<2> {
-		// In this case there will be 2 pot variables: x and and dx
+		// In this case there will be 2 plot variables: x and and dx
 		// Force = -kx
 		let force = -self.k * state.0[0];
 		// Acc = force / mass
@@ -24,6 +24,22 @@ impl StaticDifferentiator<2> for StaticSpringAndMass {
 		NDimensionalDerivative(GenericVector([
 			state.0[1],
 			acc
+			/*state.0[1],
+			-state.0[0]*/
 		]))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+	#[test]
+	fn differentiation() {
+		let mut d = StaticSpringAndMass::new();
+		let state = GenericVector::<2>([0.0, 1.0]);
+		assert_eq!(
+			d.differentiate(&state),
+			NDimensionalDerivative(GenericVector([1.0, 0.0]))
+		);
 	}
 }
