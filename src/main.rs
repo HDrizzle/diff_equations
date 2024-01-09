@@ -12,7 +12,7 @@ fn create_image() {
 	let step = 0.005;
 	let scale = 200.0;
 	let origin = ImgV2::zeros();
-	let mut stepper: Stepper<2, spring::StaticSpringAndMass> = Stepper::<2, spring::StaticSpringAndMass>::new(max_magnitude, step);
+	let mut stepper: Stepper<2, StaticSpringAndMass> = Stepper::<2, StaticSpringAndMass>::new(StaticSpringAndMass::default(), max_magnitude, step);
 	stepper.state = GenericVector([0.0, 1.0]);
 	let mut image: RgbImage = ImageBuffer::from_pixel(500, 500, background);
 	// Render
@@ -30,15 +30,15 @@ fn create_image() {
 }
 
 fn start_gui() {
-	let stepper: Stepper<2, spring::StaticSpringAndMass> = Stepper::<2, spring::StaticSpringAndMass>::new(10000.0, 0.01);
+	let stepper: Stepper<2, StaticSpringAndMass> = Stepper::<2, StaticSpringAndMass>::new(StaticSpringAndMass::default(), 10000.0, 0.01);
 	diff_equations::gui::main(stepper);
 }
 
 fn debug_print() {
-	let num_iterations = 50;
+	let num_iterations = 10;
 	let step = 0.05;
 	let max_magnitude = 10000.0;
-	let mut stepper: Stepper<2, spring::StaticSpringAndMass> = Stepper::<2, spring::StaticSpringAndMass>::new(max_magnitude, step);
+	let mut stepper: Stepper<2, StaticSpringAndMass> = Stepper::<2, StaticSpringAndMass>::new(StaticSpringAndMass::default(), max_magnitude, step);
 	stepper.state = GenericVector([0.0, 1.0]);
 	for i in 0..num_iterations {
 		println!("{}: {:?}", i, stepper.state);

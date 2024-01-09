@@ -9,8 +9,8 @@ use image::{RgbImage, Rgb};
 use nalgebra::{Scalar, base::{Vector2, Vector3}};
 
 pub mod electronics;
-pub mod spring;
 pub mod gui;
+pub mod physics;
 
 pub mod prelude {
 	use super::*;
@@ -58,7 +58,9 @@ pub mod prelude {
 		StaticDifferentiator,
 		PlotVariableIndices,
 		Stepper,
-		spring,
+		physics::{
+			StaticSpringAndMass
+		},
 		render_image
 	};
 }
@@ -127,7 +129,6 @@ pub struct PlotVariableIndices(// Array of indices corresponding to `GeneralNume
 );
 
 pub trait StaticDifferentiator<const N: usize>: Clone + Send {// N: size of display variable array, M: size of general numeric state
-	fn new() -> Self;
 	fn differentiate(&mut self, state: &GenericVector<N>) -> NDimensionalDerivative<N>;
 }
 
@@ -140,9 +141,9 @@ pub struct Stepper<const N: usize, T: StaticDifferentiator<N>> {
 }
 
 impl<const N: usize, T: StaticDifferentiator<N>> Stepper<N, T> {
-	pub fn new(state_vec_len_limit: Float, dt: Float) -> Self {
+	pub fn new(differentiator: T, state_vec_len_limit: Float, dt: Float) -> Self {
 		Self {
-			differentiator: T::new(),
+			differentiator,
 			state_vec_len_limit,
 			state: GenericVector::<N>::new(),
 			dt
