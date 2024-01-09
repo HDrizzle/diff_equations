@@ -3,8 +3,8 @@ use crate::prelude::*;
 
 #[derive(Clone)]
 pub struct StaticSpringAndMass {
-	k: f64,
-	mass: f64
+	k: Float,
+	mass: Float
 }
 
 impl StaticDifferentiator<2> for StaticSpringAndMass {

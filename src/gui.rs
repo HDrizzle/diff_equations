@@ -1,5 +1,5 @@
 // Uses bevy for GUI
-use bevy::prelude::*;
+use bevy::{prelude::*, core::Zeroable};
 use crate::prelude::*;
 
 struct MainPlugin;
@@ -9,14 +9,24 @@ struct MainPlugin;
 pub struct CameraComponent;
 
 // Systems
-fn render_setup(mut commands: Commands) {
+fn render_setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>
+) {
     commands.spawn((
 		Camera3dBundle {
-			transform: Transform::from_xyz(50.0, 10.0, 0.0).looking_at(Vec3::new(50., 0., 50.), Vec3::Y),
+			transform: Transform::from_xyz(50.0, 15.0, 50.0).looking_at(Vec3::new(0., 0., 0.), Vec3::Y),
 			..default()
 		},
 		CameraComponent
 	));
+    commands.spawn(
+        PbrBundle{
+            mesh: meshes.add(shape::Box::from_corners(Vec3::zeroed(), Vec3::splat(5.0)).into()),
+            ..default()
+        }
+    );
 }
 
 impl Plugin for MainPlugin {
@@ -25,7 +35,7 @@ impl Plugin for MainPlugin {
     }
 }
 
-pub fn main<const N: usize, T: StaticDifferentiator<N> + Clone>(stepper: Stepper<N, T>) {
+pub fn main<const N: usize, T: StaticDifferentiator<N> + Clone + Send + Sync + 'static>(stepper: Stepper<N, T>) {
     let mut app = App::new();
     app.add_plugins((
         DefaultPlugins.set(WindowPlugin {
@@ -37,6 +47,7 @@ pub fn main<const N: usize, T: StaticDifferentiator<N> + Clone>(stepper: Stepper
 		}),
         MainPlugin
     ));
+    app.insert_resource(stepper);
     println!("Starting bevy app");
     app.run();
 }
