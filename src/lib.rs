@@ -6,7 +6,7 @@ Inspired by: Computers pattern chaos and beauty, by Clifford A Pickover. Pg 216
 use std::ops;
 use bevy::ecs::system::Resource;
 pub use image::{RgbImage, ImageBuffer, Rgb};
-use nalgebra::{Scalar, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
+use nalgebra::{Scalar, Dim, Const, Matrix, VecStorage, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
 
 pub mod electronics;
 pub mod gui;
@@ -15,6 +15,7 @@ pub mod physics;
 pub mod prelude {
 	use super::*;
 	pub const APP_NAME: &str = "Differential equation plotter";
+	pub const MEDIA_DIR: &str = "media/";
 	pub type Float = f64;
 	pub type Int = i32;
 	pub type UInt = u32;
@@ -73,7 +74,8 @@ pub mod prelude {
 		render_image,
 		RgbImage,
 		Rgb,
-		ImageBuffer
+		ImageBuffer,
+		assert_vec_is_finite
 	};
 }
 
@@ -116,6 +118,7 @@ pub struct Stepper<T: StaticDifferentiator> {
 impl<T: StaticDifferentiator> Stepper<T> {
 	pub fn new(differentiator: T, state_vec_len_limit: Float, dt: Float) -> Self {
 		let state = differentiator.begining_state();
+		assert_vec_is_finite(&state).unwrap();
 		Self {
 			differentiator,
 			state_vec_len_limit,
@@ -145,6 +148,7 @@ impl<T: StaticDifferentiator> Stepper<T> {
 		if final_state.magnitude() >= self.state_vec_len_limit {// I'm pretty sure magnitude works in this context, but not certain
 			return Err(format!("Vector magnitude of state met or exceeded limit of {}", self.state_vec_len_limit));
 		}
+		assert_vec_is_finite(&final_state).unwrap();
 		self.state = final_state;
 		Ok(())
 	}
@@ -195,4 +199,13 @@ pub fn render_image<T: StaticDifferentiator>(
 			image.put_pixel(px_pos.x as u32, px_pos.y as u32, fill_color);
 		}*/
 	}
+}
+
+pub fn assert_vec_is_finite(v: &VDyn) -> Result<(), String> {
+	for (i, n) in v.iter().enumerate() {
+		if !n.is_finite() {
+			return Err(format!("Scalar at index {} is not finite ({})", i, n));
+		}
+	}
+	Ok(())
 }
