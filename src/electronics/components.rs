@@ -16,7 +16,10 @@ impl Component for Resistor {
     fn initial_state(&self) -> VDyn {
         VDyn::from_vec(Vec::new())
     }
-    fn voltage_on_other_nodes(&mut self, node: usize, voltage: Float) -> std::collections::HashMap<usize, Float> {
+    fn voltage_on_other_nodes(&self, node: usize, voltage: Float) -> std::collections::HashMap<usize, Float> {
         HashMap::new()// TODO
+    }
+    fn apparent_resistance(&self, node1: usize, node2: usize) -> Float {
+        0.0
     }
 }

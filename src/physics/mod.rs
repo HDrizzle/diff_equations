@@ -1,6 +1,8 @@
 // Inverse-square law
 use crate::prelude::*;
 
+pub mod soft_body;
+
 #[derive(Clone)]
 pub struct StaticSpringAndMass {
 	pub k: Float,

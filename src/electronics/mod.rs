@@ -10,7 +10,8 @@ use components::*;
 trait Component {
 	fn state_representation_vec_size(&self) -> usize;
 	fn initial_state(&self) -> VDyn;
-	fn voltage_on_other_nodes(&mut self, node: usize, voltage: Float) -> HashMap<usize, Float>;
+	fn voltage_on_other_nodes(&self, node: usize, voltage: Float) -> HashMap<usize, Float>;
+	fn apparent_resistance(&self, node1: usize, node2: usize) -> Float;
 }
 
 struct ComponentStatic {
