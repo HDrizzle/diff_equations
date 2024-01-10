@@ -1,7 +1,6 @@
 // Most functionality is in lib.rs, this is only for playing around
 #![allow(warnings)]
 use diff_equations::prelude::*;
-use image::{Rgb, ImageBuffer, RgbImage};
 use nalgebra::max;
 
 fn create_image() {
@@ -11,17 +10,21 @@ fn create_image() {
 	let max_magnitude = 10000.0;
 	let step = 0.005;
 	let scale = 200.0;
+	let image_size = ImgV2::new(500, 500);
 	let origin = ImgV2::zeros();
 	let mut stepper: Stepper<StaticSpringAndMass> = Stepper::<StaticSpringAndMass>::new(StaticSpringAndMass::default(), max_magnitude, step);
 	stepper.state = VDyn::from_vec(vec![0.0, 1.0]);
-	let mut image: RgbImage = ImageBuffer::from_pixel(500, 500, background);
+	let mut image: RgbImage = ImageBuffer::from_pixel(image_size.x, image_size.y, background);
 	// Render
 	render_image(
 		stepper,
 		&PlotVariableIndices(vec![0,1]),
 		&mut image,
-		scale,
-		origin,
+		ImagePosTranslater {
+			scale,
+			origin,
+			image_size
+		},
 		num_iterations,
 		fill_color
 	);
@@ -47,5 +50,5 @@ fn debug_print() {
 }
 
 fn main() {
-	create_image();
+	soft_body::test();
 }

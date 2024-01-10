@@ -5,8 +5,8 @@ Inspired by: Computers pattern chaos and beauty, by Clifford A Pickover. Pg 216
 
 use std::ops;
 use bevy::ecs::system::Resource;
-use image::{RgbImage, Rgb};
-use nalgebra::{Scalar, base::{Vector2, Vector3, OVector, dimension::Dyn}};
+pub use image::{RgbImage, ImageBuffer, Rgb};
+use nalgebra::{Scalar, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
 
 pub mod electronics;
 pub mod gui;
@@ -23,6 +23,7 @@ pub mod prelude {
 	pub type VDyn = OVector<Float, Dyn>;
 	pub type ImgV2 = Vector2<u32>;
 	pub type IntV2 = Vector2<Int>;
+	pub type Iso2 = Isometry2<Float>;
 	pub fn imgv2_to_v2(imgv2: ImgV2) -> V2 {
 		V2::new(
 			imgv2.x.into(),
@@ -47,6 +48,12 @@ pub mod prelude {
 			v2.y as Float
 		)
 	}
+	pub fn intv2_to_imgv2(v2: IntV2) -> ImgV2 {
+		ImgV2::new(
+			v2.x as u32,
+			v2.y as u32
+		)
+	}
 	pub fn imgv2_to_intv2(imgv2: ImgV2) -> IntV2 {
 		IntV2::new(
 			imgv2.x as Int,
@@ -58,10 +65,15 @@ pub mod prelude {
 		StaticDifferentiator,
 		PlotVariableIndices,
 		Stepper,
+		ImagePosTranslater,
 		physics::{
-			StaticSpringAndMass
+			StaticSpringAndMass,
+			soft_body
 		},
-		render_image
+		render_image,
+		RgbImage,
+		Rgb,
+		ImageBuffer
 	};
 }
 
@@ -95,7 +107,7 @@ pub trait StaticDifferentiator {
 
 #[derive(Resource)]
 pub struct Stepper<T: StaticDifferentiator> {
-	differentiator: T,
+	pub differentiator: T,
 	state_vec_len_limit: Float,
 	pub state: VDyn,
 	dt: Float
@@ -138,30 +150,49 @@ impl<T: StaticDifferentiator> Stepper<T> {
 	}
 }
 
+pub struct ImagePosTranslater {
+	pub scale: Float,// Px per world units, gets larger when zoomed in
+	pub origin: ImgV2,// Location of world origin relative to center of image image (px), not effected by scale
+	pub image_size: ImgV2
+}
+
+impl ImagePosTranslater {
+	pub fn world_to_px(
+		&self,
+		input: V2,
+	) -> Option<ImgV2> {
+		// Returns Some(_) if position is inside image
+		let center = self.image_size / 2;
+		let final_y_up = v2_to_intv2(input * self.scale) + imgv2_to_intv2(center);// TODO: apply origin
+		let px_pos = IntV2::new(final_y_up.x, self.image_size.y as Int - final_y_up.y);
+		let (x, y) = (px_pos.x, px_pos.y);
+		match x < self.image_size.x as Int && x >= 0 && y < self.image_size.y as Int && y >= 0 {
+			true => Some(intv2_to_imgv2(px_pos)),
+			false => None
+		}
+	}
+}
+
 pub fn render_image<T: StaticDifferentiator>(
 	mut stepper: Stepper<T>,
 	plot_indices: &PlotVariableIndices,
 	image: &mut RgbImage,
-	scale: Float,// Px per world units, gets larger when zoomed in
-	origin: ImgV2,// Location of world origin relative to center of image image (px), not effected by scale
+	translater: ImagePosTranslater,// Location of world origin relative to center of image image (px), not effected by scale
 	num_iterations: UInt,
 	fill_color: Rgb<u8>
 ) {
 	assert_eq!(plot_indices.0.len(), 2, "Plot indices must have length of 2 for image rendering");
-	let size = ImgV2::new(image.width(), image.height());
-	let center = size / 2;
-	// Temp function to translate into pixel units
-	let to_px = |input: V2| -> IntV2 {
-		let final_y_up = v2_to_intv2(input * scale) + imgv2_to_intv2(center);// TODO: apply origin
-		IntV2::new(final_y_up.x, size.y as Int - final_y_up.y)
-	};
 	for _ in 0..num_iterations {
 		stepper.step();
 		let pos = plot_indices.get_plot_variables(&stepper.state);
-		let px_pos = to_px(V2::new(pos[0], pos[1]));
+		match translater.world_to_px(V2::new(pos[0], pos[1])) {
+			Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
+			None => {}
+		}
+		/*let px_pos = to_px(V2::new(pos[0], pos[1]));
 		let (x, y) = (px_pos.x, px_pos.y);
 		if x < image.width() as Int && x >= 0 && y < image.height() as Int && y >= 0 {
 			image.put_pixel(px_pos.x as u32, px_pos.y as u32, fill_color);
-		}
+		}*/
 	}
 }
