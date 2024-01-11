@@ -1,5 +1,8 @@
 // Soft-body 2D physics simulation
 use std::collections::HashMap;
+use nalgebra::{UnitComplex, Translation, Dyn};
+use approx::assert_relative_eq;
+
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -10,6 +13,7 @@ pub struct SoftBodySettings {
 	spring_damping: Float,// Force / velocity
 	gravity: Float,// world-units/sec^2
 	ground_k: Float,
+	iterations_per_energy_correction: u64
 }
 
 impl Default for SoftBodySettings {
@@ -20,9 +24,15 @@ impl Default for SoftBodySettings {
 			spring_k: 10.0,
 			spring_damping: 1.0,
 			gravity: -9.81,
-			ground_k: 100.0
+			ground_k: 100.0,
+			iterations_per_energy_correction: 400
 		}
 	}
+}
+
+pub struct SoftBodyAuxData {
+	pub energy: Float,
+	iterations: u64
 }
 
 pub struct SoftBody {// Simulates a grid of "nodes" (points with mass) connected to each other with "springs"
@@ -60,8 +70,33 @@ impl SoftBody {
 			node_index_lookup
 		}
 	}
-	fn apply_iso(&self, state: &mut VDyn, iso: Iso2) {
-		todo!()
+	fn apply_iso(&self, state: &mut VDyn, aux_state: &mut SoftBodyAuxData, iso: Iso2) {
+		for node_i in 0..self.num_nodes {
+			let (pos, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+			// Rotate pos and vel, only translate pos
+			let new_pos = (iso.rotation * pos) + iso.translation.vector;
+			let new_vel = iso.rotation * vel;
+			// Set new pos and vel
+			Self::generic_set_state(node_i, new_pos, new_vel, state);
+		}
+		// Update energy state
+		aux_state.energy = self.total_energy(state);
+	}
+	/// Returns: (PE, KE)
+	pub fn energy(&self, state: &VDyn) -> (Float, Float) {
+		let mut pe: Float = 0.0;
+		let mut ke: Float = 0.0;
+		for node_i in 0..self.num_nodes {
+			let (pos, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+			pe += self.settings.node_mass * -self.settings.gravity * pos.y;// PE = mgh
+			ke += self.settings.node_mass * vel.magnitude().powi(2) * 0.5;// KE = mV^2/2
+		}
+		// Done
+		(pe, ke)
+	}
+	pub fn total_energy(&self, state: &VDyn) -> Float {
+		let (pe, ke) = self.energy(state);
+		pe + ke
 	}
 	pub fn get_node_pos_and_vel_from_state_vec(node_i: usize, state: &VDyn) -> (V2, V2) {
 		// (position, velocity)
@@ -88,10 +123,15 @@ impl SoftBody {
 		state[start + 2] = v2.x;
 		state[start + 3] = v2.y;
 	}
-	fn spring_force(&self, length: Float) -> Float {
+	fn spring_force_ratio(&self, length: Float) -> Float {
 		// Ideal length is 1. + is tension, - is compression
 		let length_corrected = length - 1.0;
 		length_corrected * self.settings.spring_k
+	}
+	fn spring_force_linear(&self, length: Float, ideal_length: Float) -> Float {
+		// Ideal length is 1. + is tension, - is compression
+		let length_offset = length - ideal_length;
+		length_offset * self.settings.spring_k
 	}
 	fn get_node_i_from_grid_pos(&self, grid_pos: &IntV2) -> Option<usize> {
 		match self.node_index_lookup.get(grid_pos) {
@@ -132,28 +172,38 @@ impl SoftBody {
 	}
 	fn force_between_nodes(&self, ideal_length: Float, rel_pos: V2, rel_vel: V2) -> V2 {
 		(rel_pos / rel_pos.magnitude()) * (
-			self.spring_force(rel_pos.magnitude() / ideal_length)// Static spring force
-			+ 0.0// Damping, TODO: project rel_vel onto rel_pos and multiply magitude by self.settings.spring_damping
+			self.spring_force_linear(rel_pos.magnitude(), ideal_length)// Static spring force
+			+ (v2_project(rel_vel, rel_pos).magnitude() * self.settings.spring_damping)// Damping, TODO: project rel_vel onto rel_pos and multiply magitude by self.settings.spring_damping
 		)
 	}
 	fn does_node_exist_at_grid_pos(&self, grid_pos: &IntV2) -> bool {
 		self.fill[grid_pos.x as usize][grid_pos.y as usize]
 	}
-	pub fn render_image(&self, state: &VDyn, image: &mut RgbImage, fill_color: Rgb<u8>, translater: &ImagePosTranslater) {
+	pub fn render_image(&self, state: &VDyn, image: &mut RgbImage, #[cfg(feature = "texture-rendering")] texture: &RgbImage, fill_color: Rgb<u8>, translater: &ImagePosTranslater) {
 		let mut node_i: usize = 0;
 		for x in 0..self.bounding_box.x {
 			for y in 0..self.bounding_box.y {
 				let grid_pos = IntV2::new(x, y);
 				let is_node: bool = self.does_node_exist_at_grid_pos(&grid_pos);
 				if is_node {
-					let (pos, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
-					match translater.world_to_px(pos) {
-						Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
-						None => {}
+					#[cfg(feature = "node-point-rendering")] {
+						let (pos, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+						match translater.world_to_px(pos) {
+							Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
+							None => {}
+						}
+					}
+					#[cfg(feature = "texture-rendering")] {
+						
 					}
 					node_i += 1;
 				}
 			}
+		}
+		// Ground
+		let ground_px_y = translater.world_to_px(V2::zeros()).expect("Expected world origin to be on the image, this is not the greatest code though so it could get broken").y;
+		for px_x in 0..image.width() {
+			image.put_pixel(px_x, ground_px_y, Rgb([255; 3]));
 		}
 	}
 }
@@ -165,11 +215,12 @@ impl StaticDifferentiator for SoftBody {
 	i*4 + 2: X velocity
 	i*4 + 3: Y velocity
 	*/
+	type AuxData = SoftBodyAuxData;
 	fn state_representation_vec_size(&self) -> usize {
 		// (Number of nodes * 2 dimensions) * 2 (positions and velocities)
 		self.num_nodes * 4
 	}
-	fn begining_state(&self) -> VDyn {
+	fn initial_state(&self) -> (VDyn, SoftBodyAuxData) {
 		let mut out = VDyn::from_vec(vec![0.0; self.state_representation_vec_size()]);
 		let mut node_i: usize = 0;
 		for x in 0..self.bounding_box.x {
@@ -180,7 +231,7 @@ impl StaticDifferentiator for SoftBody {
 					// Set node position and velocity
 					let start = node_i * 4;
 					// Position
-					out[start] = (x as Float) * self.settings.precision;
+					out[start    ] = (x as Float) * self.settings.precision;
 					out[start + 1] = (y as Float) * self.settings.precision;
 					// Velocity
 					out[start + 2] = 0.0;
@@ -193,9 +244,10 @@ impl StaticDifferentiator for SoftBody {
 		// Safety check
 		assert_eq!(node_i, self.num_nodes, "When iterating over `self.fill`, the number of occupied nodes counted ({}) was != to `self.num_nodes` ({})", node_i, self.num_nodes);
 		// Done
-		out
+		let energy = self.total_energy(&out);
+		(out, SoftBodyAuxData{energy, iterations: 0})
 	}
-	fn differentiate(&self, state: &VDyn) -> NDimensionalDerivative {
+	fn differentiate(&self, state: &VDyn, aux_state: &mut SoftBodyAuxData) -> NDimensionalDerivative {
 		let mut derivative = NDimensionalDerivative(VDyn::from_vec(vec![0.0; self.state_representation_vec_size()]));
 		let mut node_i: usize = 0;
 		for x in 0..self.bounding_box.x {
@@ -213,8 +265,28 @@ impl StaticDifferentiator for SoftBody {
 			}
 		}
 		assert_vec_is_finite(&derivative.0).unwrap();
+		aux_state.iterations += 1;
 		// Done
 		derivative
+	}
+	fn set_state(&self, state: &mut VDyn, aux_state: &mut Self::AuxData) {
+		#[cfg(feature = "conservation-of-energy")]
+		if aux_state.iterations % self.settings.iterations_per_energy_correction == 0 {
+			// Enforce conservation of energy. It is the law.
+			assert!(aux_state.energy >= 0.0, "Energy must not be >= 0, otherwise this will cause problems with the energy conservation correction");
+			let ideal_total = aux_state.energy;
+			let (actual_pe, actual_ke) = self.energy(state);
+			let ideal_ke = ideal_total - actual_pe;
+			let energy_ratio = actual_ke / ideal_ke;
+			// Scale velocity for each node to adjust actual KE
+			for node_i in 0..self.num_nodes {
+				let (pos, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+				let new_vel = vel / energy_ratio.sqrt();// Pretty sure this is correct, TODO: verify
+				Self::generic_set_state(node_i, pos, new_vel, state);
+			}
+			// Check
+			assert_relative_eq!(self.total_energy(state), aux_state.energy, epsilon = EPSILON);
+		}
 	}
 }
 
@@ -242,37 +314,83 @@ impl<'a> Iterator for NodeIterator<'a> {
 pub fn test() {
 	// Use this command to generate video: $ ffmpeg -framerate 30 -i soft_body_render_%d.png -vcodec libx264 -r 30 -pix_fmt yuv420p output.mp4
 	let body = SoftBody::from_bb_inclusion_func(
-		IntV2::new(10, 10),
+		IntV2::new(40, 40),
 		|_| {true},
 		SoftBodySettings {
 			precision: 1.0,
 			node_mass: 1.0,
-			spring_k: 100.0,
-			spring_damping: 1.0,
+			spring_k: 700.0,
+			spring_damping: 0.0,
 			gravity: -1.0,
-			ground_k: 100.0
+			ground_k: 150.0,
+			iterations_per_energy_correction: 400
 		}
 	);
-	let num_iterations: usize = 200;
-	let dt = 0.02;
-	let background = Rgb([0; 3]);
+	let num_frames: usize = 400;
+	let iterations_per_frame: usize = 800;
+	let dt = 0.0001;
+	let background_color = Rgb([0; 3]);
 	let fill_color = Rgb([255; 3]);
 	let image_size = ImgV2::new(500, 500);
 	let translater = ImagePosTranslater {
-		scale: 10.0,
+		scale: 5.0,
 		origin: ImgV2::zeros(),
 		image_size
 	};
 	let mut stepper = Stepper::new(body, 10000.0, dt);
-	// Run
-	for i in 0..num_iterations {
-		// Step
-		stepper.step();
-		// Render image
-		let mut image: RgbImage = ImageBuffer::from_pixel(image_size.x, image_size.y, background);
-		stepper.differentiator.render_image(&stepper.state, &mut image, fill_color, &translater);
-		// Save image
-		image.save(&format!("{}soft_body_render_{}.png", MEDIA_DIR, i));
+	// Texture image
+	#[cfg(feature = "texture-rendering")]
+	let texture = {
+		let texture_dyn = Reader::open(format!("{}texture.png", MEDIA_DIR)).unwrap().decode().unwrap();
+		if let DynamicImage::ImageRgb8(img) = texture_dyn {
+			img
+		}
+		else {
+			panic!("Texture image is not RGB 8")
+		}
+	};
+	// Transform body
+	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/8.0), translation: Translation{vector: V2::new(0.0, 1.0)}});
+	// Build video creator
+	let mut video_creator = VideoCreator {
+		num_frames,
+		iterations_per_frame,
+		background_color,
+		fill_color,
+		image_size,
+		translater,
+		stepper,
+		#[cfg(feature = "texture-rendering")]
+		texture
+	};
+	video_creator.create();
+}
+
+pub struct VideoCreator {
+	num_frames: usize,
+	iterations_per_frame: usize,
+	background_color: Rgb<u8>,
+	fill_color: Rgb<u8>,
+	image_size: ImgV2,
+	translater: ImagePosTranslater,
+	stepper: Stepper<SoftBody>,
+	#[cfg(feature = "texture-rendering")]
+	texture: RgbImage
+}
+
+impl VideoCreator {
+	pub fn create(&mut self) {
+		for i in 0..self.num_frames {
+			// Step
+			for _ in 0..self.iterations_per_frame {
+				self.stepper.step();
+			}
+			// Render image
+			let mut image: RgbImage = ImageBuffer::from_pixel(self.image_size.x, self.image_size.y, self.background_color);
+			self.stepper.differentiator.render_image(&self.stepper.state, &mut image, #[cfg(feature = "texture-rendering")] &self.texture, self.fill_color, &self.translater);
+			// Save image
+			image.save(&format!("{}soft_body_render_{}.png", MEDIA_DIR, i));
+		}
 	}
 }
 
@@ -286,7 +404,8 @@ mod tests {
 			spring_k: 15.0,
 			spring_damping: 1.0,
 			gravity: -9.81,
-			ground_k: 100.0
+			ground_k: 100.0,
+			iterations_per_energy_correction: 400
 		}
 	}
 	#[test]
@@ -301,7 +420,7 @@ mod tests {
 	fn force() {
 		let settings = soft_body_settings();
 		let body = SoftBody::from_bb_inclusion_func(IntV2::new(2, 1), |_| {true}, settings.clone());
-		let mut state = body.begining_state();
+		let (mut state, _) = body.initial_state();
 		assert_eq!(body.state_representation_vec_size(), 8);
 		assert_eq!(SoftBody::get_node_pos_and_vel_from_state_vec(0, &state), (V2::zeros(), V2::zeros()));
 		assert_eq!(SoftBody::get_node_pos_and_vel_from_state_vec(1, &state), (V2::new(1.0, 0.0), V2::zeros()));
@@ -311,9 +430,42 @@ mod tests {
 		// Calculate force
 		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(-15.0, 0.0));
 		// 2
-		// Change 2nd node to be 2 units away from the first one
+		// Change 2nd node to be 0.5 units away from the first one
 		SoftBody::generic_set_state(1, V2::new(0.5, 0.0), V2::zeros(), &mut state);
 		// Calculate force
-		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(5.0, 0.0));
+		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(7.5, 0.0));
+	}
+	#[test]
+	fn energy() {
+		let settings = soft_body_settings();
+		let body = SoftBody::from_bb_inclusion_func(IntV2::new(1, 2), |_| {true}, settings.clone());
+		let (mut state, mut aux_state) = body.initial_state();
+		assert_eq!(body.state_representation_vec_size(), 8);// 2 nodes x 4 scalars per node
+		// 1
+		// Node 0 will have no energy, node 1 will have gravity * mass * Y-value potential energy
+		assert_eq!(aux_state.energy, -settings.gravity);
+		assert_eq!(body.energy(&state), (-settings.gravity, 0.0));
+		// 2
+		// Rotate 90 degrees so both nodes are @ y=0
+		body.apply_iso(&mut state, &mut aux_state, Iso2{rotation: UnitComplex::from_angle(PI/2.0), translation: Translation{vector: V2::zeros()}});
+		assert_relative_eq!(aux_state.energy, 0.0, epsilon = EPSILON);
+		// 3
+		// Set velocity and position
+		SoftBody::generic_set_state(1, V2::new(-1.0, 1.0), V2::new(0.0, 5.0), &mut state);
+		assert_eq!(body.energy(&mut state), (-settings.gravity, 12.5));
+	}
+	#[cfg(feature = "conservation-of-energy")]
+	#[test]
+	fn energy_conservation_correction() {
+		let settings = soft_body_settings();
+		let body = SoftBody::from_bb_inclusion_func(IntV2::new(1, 2), |_| {true}, settings.clone());
+		let (mut state, mut aux_state) = body.initial_state();
+		assert_eq!(aux_state.energy, -settings.gravity);
+		// 1
+		// Move node 1 to lower y-value and increase its velocity by a lot
+		SoftBody::generic_set_state(1, V2::new(0.0, 0.5), V2::new(10.0, 0.0), &mut state);
+		assert_eq!(body.energy(&state), (-settings.gravity / 2.0, 50.0));
+		body.set_state(&mut state, &mut aux_state);
+		assert_relative_eq!(body.total_energy(&state), aux_state.energy);
 	}
 }

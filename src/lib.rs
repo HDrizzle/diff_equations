@@ -3,13 +3,12 @@ Inspired by: Computers pattern chaos and beauty, by Clifford A Pickover. Pg 216
 */
 #![allow(warnings)]// Trust me bro
 
-use std::ops;
+use std::{ops, f32::consts::PI};
 use bevy::ecs::system::Resource;
-pub use image::{RgbImage, ImageBuffer, Rgb};
 use nalgebra::{Scalar, Dim, Const, Matrix, VecStorage, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
 
-pub mod electronics;
-pub mod gui;
+//pub mod electronics;
+//pub mod gui;
 pub mod physics;
 
 pub mod prelude {
@@ -17,6 +16,7 @@ pub mod prelude {
 	pub const APP_NAME: &str = "Differential equation plotter";
 	pub const MEDIA_DIR: &str = "media/";
 	pub type Float = f64;
+	pub const EPSILON: Float = 10e-6;
 	pub type Int = i32;
 	pub type UInt = u32;
 	pub type V2 = Vector2<Float>;
@@ -25,6 +25,8 @@ pub mod prelude {
 	pub type ImgV2 = Vector2<u32>;
 	pub type IntV2 = Vector2<Int>;
 	pub type Iso2 = Isometry2<Float>;
+	pub use std::f64::consts::PI;
+	pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
 	pub fn imgv2_to_v2(imgv2: ImgV2) -> V2 {
 		V2::new(
 			imgv2.x.into(),
@@ -61,6 +63,17 @@ pub mod prelude {
 			imgv2.y as Int
 		)
 	}
+	pub fn v2_dot(v1: V2, v2: V2) -> Float {
+		v1.x * v2.x + v1.y * v2.y
+	}
+	pub fn v2_project(v: V2, onto: V2) -> V2 {// From ChatGPT
+		let dot_product = v2_dot(v, onto);
+        let onto_dot_onto = v2_dot(onto, onto);
+
+        let scalar = dot_product / onto_dot_onto;
+
+        onto * scalar
+	}
 	pub use crate::{
 		NDimensionalDerivative,
 		StaticDifferentiator,
@@ -72,9 +85,6 @@ pub mod prelude {
 			soft_body
 		},
 		render_image,
-		RgbImage,
-		Rgb,
-		ImageBuffer,
 		assert_vec_is_finite
 	};
 }
@@ -102,9 +112,11 @@ impl PlotVariableIndices {
 }
 
 pub trait StaticDifferentiator {
+	type AuxData;
 	fn state_representation_vec_size(&self) -> usize;
-	fn begining_state(&self) -> VDyn;
-	fn differentiate(&self, state: &VDyn) -> NDimensionalDerivative;
+	fn initial_state(&self) -> (VDyn, Self::AuxData);
+	fn differentiate(&self, state: &VDyn, aux_state: &mut Self::AuxData) -> NDimensionalDerivative;
+	fn set_state(&self, state: &mut VDyn, aux_state: &mut Self::AuxData) {}
 }
 
 #[derive(Resource)]
@@ -112,43 +124,53 @@ pub struct Stepper<T: StaticDifferentiator> {
 	pub differentiator: T,
 	state_vec_len_limit: Float,
 	pub state: VDyn,
-	dt: Float
+	pub aux_state: T::AuxData,
+	dt: Float,
+	iterations: u64
 }
 
 impl<T: StaticDifferentiator> Stepper<T> {
 	pub fn new(differentiator: T, state_vec_len_limit: Float, dt: Float) -> Self {
-		let state = differentiator.begining_state();
+		let (state, aux_state) = differentiator.initial_state();
 		assert_vec_is_finite(&state).unwrap();
 		Self {
 			differentiator,
 			state_vec_len_limit,
 			state,
-			dt
+			aux_state,
+			dt,
+			iterations: 0
 		}
 	}
 	pub fn step(&mut self) -> Result<(), String> {
 		let final_state = {
-			// Steps state by 2/3 twice and averages result after each step, I figured this out a while ago and it is very stable and prevents oscillation
-			// Step 1
-			let mut diff1: NDimensionalDerivative = self.differentiator.differentiate(&self.state);
-			let state1: VDyn = self.state.clone() + (diff1.0 * self.dt * (2.0 / 3.0));
-			// Step 2
-			let diff2: NDimensionalDerivative = self.differentiator.differentiate(&state1);
-			let state2: VDyn = state1.clone() + (diff2.0 * self.dt * (2.0 / 3.0));
-			// Average state
-			let mut final_state = (state1 + state2) / 2.0;
-			final_state
-		}
-		/*{
-			let mut diff: NDimensionalDerivative = self.differentiator.differentiate(&self.state);
-			let new_state: VDyn = self.state.clone() + (diff.0 * self.dt);
-			new_state
-		}*/;
+			#[cfg(not(feature = "single-step"))] {
+				// Steps state by 2/3 twice and averages result after each step, I figured this out a while ago and it is very stable and should prevent oscillation
+				// Step 1
+				let mut diff1: NDimensionalDerivative = self.differentiator.differentiate(&self.state, &mut self.aux_state);
+				let mut state1: VDyn = self.state.clone() + (diff1.0 * self.dt * (2.0 / 3.0));
+				self.differentiator.set_state(&mut state1, &mut self.aux_state);
+				// Step 2
+				let diff2: NDimensionalDerivative = self.differentiator.differentiate(&state1, &mut self.aux_state);
+				let mut state2: VDyn = state1.clone() + (diff2.0 * self.dt * (2.0 / 3.0));
+				self.differentiator.set_state(&mut state2, &mut self.aux_state);
+				// Average state
+				let mut final_state = (state1 + state2) / 2.0;
+				final_state
+			}
+			#[cfg(feature = "single-step")] {
+				let mut diff: NDimensionalDerivative = self.differentiator.differentiate(&self.state, &mut self.aux_state);
+				let mut new_state: VDyn = self.state.clone() + (diff.0 * self.dt);
+				self.differentiator.set_state(&mut new_state, &mut self.aux_state);
+				new_state
+			}
+		};
 		// Done
 		if final_state.magnitude() >= self.state_vec_len_limit {// I'm pretty sure magnitude works in this context, but not certain
 			return Err(format!("Vector magnitude of state met or exceeded limit of {}", self.state_vec_len_limit));
 		}
 		assert_vec_is_finite(&final_state).unwrap();
+		self.iterations += 1;
 		self.state = final_state;
 		Ok(())
 	}

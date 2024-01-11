@@ -32,10 +32,10 @@ fn create_image() {
 	image.save("phase_portrait.png");
 }
 
-fn start_gui() {
+/*fn start_gui() {
 	let stepper: Stepper<StaticSpringAndMass> = Stepper::<StaticSpringAndMass>::new(StaticSpringAndMass::default(), 10000.0, 0.01);
 	diff_equations::gui::main(stepper);
-}
+}*/
 
 fn debug_print() {
 	let num_iterations = 10;
