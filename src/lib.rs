@@ -178,7 +178,7 @@ impl<T: StaticDifferentiator> Stepper<T> {
 
 pub struct ImagePosTranslater {
 	pub scale: Float,// Px per world units, gets larger when zoomed in
-	pub origin: ImgV2,// Location of world origin relative to center of image image (px), not effected by scale
+	pub origin: V2,// Location of world origin relative to center of image image (px), not effected by scale
 	pub image_size: ImgV2
 }
 
@@ -189,7 +189,7 @@ impl ImagePosTranslater {
 	) -> Option<ImgV2> {
 		// Returns Some(_) if position is inside image
 		let center = self.image_size / 2;
-		let final_y_up = v2_to_intv2(input * self.scale) + imgv2_to_intv2(center);// TODO: apply origin
+		let final_y_up = v2_to_intv2((input - self.origin) * self.scale) + imgv2_to_intv2(center);
 		let px_pos = IntV2::new(final_y_up.x, self.image_size.y as Int - final_y_up.y);
 		let (x, y) = (px_pos.x, px_pos.y);
 		match x < self.image_size.x as Int && x >= 0 && y < self.image_size.y as Int && y >= 0 {

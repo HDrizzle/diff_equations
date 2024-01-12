@@ -1,7 +1,9 @@
 // Soft-body 2D physics simulation
 use std::collections::HashMap;
-use nalgebra::{UnitComplex, Translation, Dyn};
+use bevy::text;
+use nalgebra::{UnitComplex, Translation, Dyn, SimdValue};
 use approx::assert_relative_eq;
+use image::{RgbaImage, GenericImageView};
 
 use crate::prelude::*;
 
@@ -69,6 +71,21 @@ impl SoftBody {
 			num_nodes,
 			node_index_lookup
 		}
+	}
+	pub fn from_rgba_image(grid_size: IntV2, image: &RgbaImage, settings: SoftBodySettings) -> Self {
+		let grid_size_float = intv2_to_v2(grid_size);
+		Self::from_bb_inclusion_func(
+			grid_size,
+			|grid_pos| {
+				let grid_pos_float = intv2_to_v2(grid_pos);
+				let img_pos = ImgV2::new(
+					(                  grid_pos_float.x * (image.width()  as Float  / grid_size_float.x)) as u32,
+					image.height() - ((grid_pos_float.y * (image.height() as Float) / grid_size_float.y) as u32)
+				);
+				image.get_pixel(img_pos.x.min(image.width() - 1), img_pos.y.min(image.height() - 1)).0[3] > 128
+			},
+			settings
+		)
 	}
 	fn apply_iso(&self, state: &mut VDyn, aux_state: &mut SoftBodyAuxData, iso: Iso2) {
 		for node_i in 0..self.num_nodes {
@@ -179,7 +196,7 @@ impl SoftBody {
 	fn does_node_exist_at_grid_pos(&self, grid_pos: &IntV2) -> bool {
 		self.fill[grid_pos.x as usize][grid_pos.y as usize]
 	}
-	pub fn render_image(&self, state: &VDyn, image: &mut RgbImage, #[cfg(feature = "texture-rendering")] texture: &RgbImage, fill_color: Rgb<u8>, translater: &ImagePosTranslater) {
+	pub fn render_image(&self, state: &VDyn, image: &mut RgbImage, #[cfg(feature = "texture-rendering")] texture: &RgbaImage, fill_color: Rgb<u8>, translater: &ImagePosTranslater) {
 		let mut node_i: usize = 0;
 		for x in 0..self.bounding_box.x {
 			for y in 0..self.bounding_box.y {
@@ -313,42 +330,37 @@ impl<'a> Iterator for NodeIterator<'a> {
 
 pub fn test() {
 	// Use this command to generate video: $ ffmpeg -framerate 30 -i soft_body_render_%d.png -vcodec libx264 -r 30 -pix_fmt yuv420p output.mp4
+	// Texture image
+	#[cfg(feature = "texture-rendering")]
+	let texture = {// Current texture is 176 x 493, scaling for height = 100, width = 36
+		let texture_dyn = Reader::open(format!("{}texture.png", MEDIA_DIR)).unwrap().decode().unwrap();
+		texture_dyn.into_rgba8()
+	};
 	let body = SoftBody::from_bb_inclusion_func(
-		IntV2::new(40, 40),
+		IntV2::new(50, 50),
 		|_| {true},
 		SoftBodySettings {
 			precision: 1.0,
-			node_mass: 1.0,
-			spring_k: 700.0,
+			node_mass: 0.5,
+			spring_k: 2500.0,
 			spring_damping: 0.0,
 			gravity: -1.0,
-			ground_k: 150.0,
+			ground_k: 100.0,
 			iterations_per_energy_correction: 400
 		}
 	);
 	let num_frames: usize = 400;
-	let iterations_per_frame: usize = 800;
-	let dt = 0.0001;
+	let iterations_per_frame: usize = 1600;
+	let dt = 0.00005;
 	let background_color = Rgb([0; 3]);
 	let fill_color = Rgb([255; 3]);
-	let image_size = ImgV2::new(500, 500);
+	let image_size = ImgV2::new(750, 750);
 	let translater = ImagePosTranslater {
-		scale: 5.0,
-		origin: ImgV2::zeros(),
+		scale: 7.5,
+		origin: V2::new(15.0, 20.0),
 		image_size
 	};
 	let mut stepper = Stepper::new(body, 10000.0, dt);
-	// Texture image
-	#[cfg(feature = "texture-rendering")]
-	let texture = {
-		let texture_dyn = Reader::open(format!("{}texture.png", MEDIA_DIR)).unwrap().decode().unwrap();
-		if let DynamicImage::ImageRgb8(img) = texture_dyn {
-			img
-		}
-		else {
-			panic!("Texture image is not RGB 8")
-		}
-	};
 	// Transform body
 	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/8.0), translation: Translation{vector: V2::new(0.0, 1.0)}});
 	// Build video creator
@@ -375,7 +387,7 @@ pub struct VideoCreator {
 	translater: ImagePosTranslater,
 	stepper: Stepper<SoftBody>,
 	#[cfg(feature = "texture-rendering")]
-	texture: RgbImage
+	texture: RgbaImage
 }
 
 impl VideoCreator {

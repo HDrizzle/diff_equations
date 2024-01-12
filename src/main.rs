@@ -11,7 +11,7 @@ fn create_image() {
 	let step = 0.005;
 	let scale = 200.0;
 	let image_size = ImgV2::new(500, 500);
-	let origin = ImgV2::zeros();
+	let origin = V2::zeros();
 	let mut stepper: Stepper<StaticSpringAndMass> = Stepper::<StaticSpringAndMass>::new(StaticSpringAndMass::default(), max_magnitude, step);
 	stepper.state = VDyn::from_vec(vec![0.0, 1.0]);
 	let mut image: RgbImage = ImageBuffer::from_pixel(image_size.x, image_size.y, background);

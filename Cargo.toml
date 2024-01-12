@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["single-step", "node-point-rendering", "conservation-of-energy"]#, "texture-rendering"]
+default = ["single-step", "texture-rendering", "conservation-of-energy", "node-point-rendering"]#]
 
 conservation-of-energy = []
 node-point-rendering = []
