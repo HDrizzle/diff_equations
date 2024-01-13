@@ -15,7 +15,8 @@ pub struct SoftBodySettings {
 	spring_damping: Float,// Force / velocity
 	gravity: Float,// world-units/sec^2
 	ground_k: Float,
-	iterations_per_energy_correction: u64
+	iterations_per_correction: u64,// Used for conservation of energy correction as well as local relative velocity averaging
+	local_relative_velocity_averaging: Float
 }
 
 impl Default for SoftBodySettings {
@@ -24,10 +25,11 @@ impl Default for SoftBodySettings {
 			precision: 1.0,
 			node_mass: 1.0,
 			spring_k: 10.0,
-			spring_damping: 1.0,
+			spring_damping: 0.0,
 			gravity: -9.81,
 			ground_k: 100.0,
-			iterations_per_energy_correction: 400
+			iterations_per_correction: 400,
+			local_relative_velocity_averaging: 0.1
 		}
 	}
 }
@@ -103,11 +105,22 @@ impl SoftBody {
 	pub fn energy(&self, state: &VDyn) -> (Float, Float) {
 		let mut pe: Float = 0.0;
 		let mut ke: Float = 0.0;
-		for node_i in 0..self.num_nodes {
+		self.iter_nodes(&mut |grid_pos, node_i| -> () {
 			let (pos, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
 			pe += self.settings.node_mass * -self.settings.gravity * pos.y;// PE = mgh
+			#[cfg(feature = "spring-energy")] self.iter_adjacent_nodes(&grid_pos, &mut |absolute_grid_pos, grid_offset| -> () {
+				// Get "ideal" spring length based on relative grid position
+				let grid_offset_float = intv2_to_v2(grid_offset);
+				let ideal_length = grid_offset_float.magnitude() * self.settings.precision;
+				// Get actual offset
+				let (pos1, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+				let (pos2, _) = Self::get_node_pos_and_vel_from_state_vec(self.get_node_i_from_grid_pos(&absolute_grid_pos).expect(&format!("failed to get node index at grid position {:?}", absolute_grid_pos)), state);
+				//dbg!(offset);
+				// Finally get force
+				pe += self.spring_energy((pos2 - pos1).magnitude(), ideal_length) * 0.5;// This will go over each spring twice, so multiply be half to compensate
+			});
 			ke += self.settings.node_mass * vel.magnitude().powi(2) * 0.5;// KE = mV^2/2
-		}
+		});
 		// Done
 		(pe, ke)
 	}
@@ -140,15 +153,18 @@ impl SoftBody {
 		state[start + 2] = v2.x;
 		state[start + 3] = v2.y;
 	}
-	fn spring_force_ratio(&self, length: Float) -> Float {
+	/*fn spring_force_ratio(&self, length: Float) -> Float {
 		// Ideal length is 1. + is tension, - is compression
 		let length_corrected = length - 1.0;
 		length_corrected * self.settings.spring_k
-	}
+	}*/
 	fn spring_force_linear(&self, length: Float, ideal_length: Float) -> Float {
 		// Ideal length is 1. + is tension, - is compression
 		let length_offset = length - ideal_length;
 		length_offset * self.settings.spring_k
+	}
+	fn spring_energy(&self, length: Float, ideal_length: Float) -> Float {
+		self.settings.spring_k * 0.5 * (length - ideal_length).powi(2)
 	}
 	fn get_node_i_from_grid_pos(&self, grid_pos: &IntV2) -> Option<usize> {
 		match self.node_index_lookup.get(grid_pos) {
@@ -158,70 +174,112 @@ impl SoftBody {
 	}
 	fn node_net_force(&self, node_i: usize, node_grid_pos: IntV2, state: &VDyn) -> V2 {
 		let mut net_force = V2::zeros();
+		self.iter_adjacent_nodes(
+			&node_grid_pos,
+			&mut |absolute_grid_pos, grid_offset| -> () {
+				// Get "ideal" spring length based on relative grid position
+				let grid_offset_float = intv2_to_v2(grid_offset);
+				let ideal_length = grid_offset_float.magnitude() * self.settings.precision;
+				// Get actual offset
+				let (pos1, vel1) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+				let (pos2, vel2) = Self::get_node_pos_and_vel_from_state_vec(self.get_node_i_from_grid_pos(&absolute_grid_pos).expect(&format!("failed to get node index at grid position {:?}", absolute_grid_pos)), state);
+				//dbg!(offset);
+				// Finally get force
+				net_force += self.force_between_nodes(ideal_length, pos2 - pos1, vel2 - vel1);
+				//dbg!(net_force);
+				// In case Y < 0 (touching ground)
+				if pos1.y < 0.0 {
+					net_force -= V2::new(0.0, pos1.y * self.settings.ground_k);
+				}
+				assert!(net_force.x.is_finite());
+				assert!(net_force.y.is_finite());
+			}
+		);
+		// Done
+		net_force
+	}
+	/// Iterates over nodes adjacent to `center_node_grid_pos` with `func`. `func` must have params (absolute grid pos of adjacent node, grid offset to adjacent node)
+	fn iter_adjacent_nodes(&self, center_node_grid_pos: &IntV2, func: &mut impl FnMut(IntV2, IntV2) -> ()) {
 		for x_offset in -1..2 {
 			for y_offset in -1..2 {
 				let grid_offset = IntV2::new(x_offset, y_offset);
-				let absolute_grid_pos = node_grid_pos + grid_offset;
+				let absolute_grid_pos = center_node_grid_pos + grid_offset;
 				if grid_offset != IntV2::zeros() && absolute_grid_pos.x >= 0 && absolute_grid_pos.x < self.bounding_box.x && absolute_grid_pos.y >= 0 && absolute_grid_pos.y < self.bounding_box.y {
 					if self.does_node_exist_at_grid_pos(&absolute_grid_pos) {
-						// Get "ideal" spring length based on relative grid position
-						let grid_offset_float = intv2_to_v2(grid_offset);
-						let ideal_length = grid_offset_float.magnitude() * self.settings.precision;
-						// Get actual offset
-						let (pos1, vel1) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
-						let (pos2, vel2) = Self::get_node_pos_and_vel_from_state_vec(self.get_node_i_from_grid_pos(&absolute_grid_pos).expect(&format!("failed to get node index at grid position {:?}", absolute_grid_pos)), state);
-						//dbg!(offset);
-						// Finally get force
-						net_force += self.force_between_nodes(ideal_length, pos2 - pos1, vel2 - vel1);
-						//dbg!(net_force);
-						// In case Y < 0 (touching ground)
-						if pos1.y < 0.0 {
-							net_force -= V2::new(0.0, pos1.y * self.settings.ground_k);
-						}
-						assert!(net_force.x.is_finite());
-						assert!(net_force.y.is_finite());
+						func(absolute_grid_pos, grid_offset);
 					}
 				}
 			}
 		}
-		// Done
-		net_force
+	}
+	fn local_relative_velocity_averaging(&self, state: &mut VDyn, aux_state: &mut SoftBodyAuxData) {
+		// Get local averages
+		let mut relative_velocity_averages = HashMap::<usize, V2>::new();
+		self.iter_nodes(&mut |grid_pos, node_i| {
+			let mut v_sum = Self::get_node_pos_and_vel_from_state_vec(node_i, state).1;
+			let mut count: usize = 1;
+			self.iter_adjacent_nodes(&grid_pos, &mut |adj_grid_pos, _| {
+				let (_, adj_vel) = Self::get_node_pos_and_vel_from_state_vec(self.get_node_i_from_grid_pos(&adj_grid_pos).expect("Could not get node index from grid pos when iterating adjacent nodes"), state);
+				v_sum += adj_vel;
+				count += 1;
+			});
+			// Calculate average velocity of this node along with its neighbors
+			let avg_vel = v_sum / (count as Float);
+			relative_velocity_averages.insert(node_i, avg_vel);
+		});
+		// Lerp towards average
+		self.iter_nodes(&mut |grid_pos, node_i| {
+			let (pos, curr_vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+			let local_avg_vel = relative_velocity_averages.get(&node_i).expect("Unable to get local relative velocity from hashmap which should have every node");
+			let new_vel = curr_vel.lerp(&local_avg_vel, self.settings.local_relative_velocity_averaging);
+			Self::generic_set_state(node_i, pos, new_vel, state);
+		});
+		// Update enrgy state
+		aux_state.energy = self.total_energy(state);
 	}
 	fn force_between_nodes(&self, ideal_length: Float, rel_pos: V2, rel_vel: V2) -> V2 {
 		(rel_pos / rel_pos.magnitude()) * (
 			self.spring_force_linear(rel_pos.magnitude(), ideal_length)// Static spring force
-			+ (v2_project(rel_vel, rel_pos).magnitude() * self.settings.spring_damping)// Damping, TODO: project rel_vel onto rel_pos and multiply magitude by self.settings.spring_damping
+			+ (v2_project(rel_vel, rel_pos).magnitude() * self.settings.spring_damping)// Damping, project rel_vel onto rel_pos and multiply magitude by self.settings.spring_damping
 		)
 	}
 	fn does_node_exist_at_grid_pos(&self, grid_pos: &IntV2) -> bool {
 		self.fill[grid_pos.x as usize][grid_pos.y as usize]
 	}
 	pub fn render_image(&self, state: &VDyn, image: &mut RgbImage, #[cfg(feature = "texture-rendering")] texture: &RgbaImage, fill_color: Rgb<u8>, translater: &ImagePosTranslater) {
+		self.iter_nodes(&mut |grid_pos, node_i| -> () {
+			#[cfg(feature = "node-point-rendering")] {
+				let (pos, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+				match translater.world_to_px(pos) {
+					Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
+					None => {}
+				}
+			}
+			#[cfg(feature = "texture-rendering")] {
+				
+			}
+		});
+		// Ground
+		let ground_px_y = translater.world_to_px(V2::zeros()).expect("Expected world origin to be on the image, this is not the greatest code though so it could get broken").y;
+		for px_x in 0..image.width() {
+			image.put_pixel(px_x, ground_px_y, Rgb([255; 3]));
+		}
+	}
+	/// Iterate over each node in the grid and run `func`. `func` should take (grid pos, node index)
+	fn iter_nodes(&self, func: &mut impl FnMut(IntV2, usize) -> ()) {
 		let mut node_i: usize = 0;
 		for x in 0..self.bounding_box.x {
 			for y in 0..self.bounding_box.y {
 				let grid_pos = IntV2::new(x, y);
 				let is_node: bool = self.does_node_exist_at_grid_pos(&grid_pos);
 				if is_node {
-					#[cfg(feature = "node-point-rendering")] {
-						let (pos, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
-						match translater.world_to_px(pos) {
-							Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
-							None => {}
-						}
-					}
-					#[cfg(feature = "texture-rendering")] {
-						
-					}
+					func(grid_pos, node_i);
 					node_i += 1;
 				}
 			}
 		}
-		// Ground
-		let ground_px_y = translater.world_to_px(V2::zeros()).expect("Expected world origin to be on the image, this is not the greatest code though so it could get broken").y;
-		for px_x in 0..image.width() {
-			image.put_pixel(px_x, ground_px_y, Rgb([255; 3]));
-		}
+		// Safety check
+		assert_eq!(node_i, self.num_nodes, "When iterating over all nodes, the number of occupied nodes counted ({}) was != to `self.num_nodes` ({})", node_i, self.num_nodes);
 	}
 }
 
@@ -239,67 +297,52 @@ impl StaticDifferentiator for SoftBody {
 	}
 	fn initial_state(&self) -> (VDyn, SoftBodyAuxData) {
 		let mut out = VDyn::from_vec(vec![0.0; self.state_representation_vec_size()]);
-		let mut node_i: usize = 0;
-		for x in 0..self.bounding_box.x {
-			for y in 0..self.bounding_box.y {
-				let grid_pos = IntV2::new(x, y);
-				let is_node: bool = self.does_node_exist_at_grid_pos(&grid_pos);
-				if is_node {
-					// Set node position and velocity
-					let start = node_i * 4;
-					// Position
-					out[start    ] = (x as Float) * self.settings.precision;
-					out[start + 1] = (y as Float) * self.settings.precision;
-					// Velocity
-					out[start + 2] = 0.0;
-					out[start + 3] = 0.0;
-					// Don't forgot to
-					node_i += 1;
-				}
-			}
-		}
-		// Safety check
-		assert_eq!(node_i, self.num_nodes, "When iterating over `self.fill`, the number of occupied nodes counted ({}) was != to `self.num_nodes` ({})", node_i, self.num_nodes);
+		self.iter_nodes(&mut |grid_pos, node_i| -> () {
+			// Set node position and velocity
+			let start = node_i * 4;
+			// Position
+			out[start    ] = (grid_pos.x as Float) * self.settings.precision;
+			out[start + 1] = (grid_pos.y as Float) * self.settings.precision;
+			// Velocity
+			out[start + 2] = 0.0;
+			out[start + 3] = 0.0;
+		});
 		// Done
 		let energy = self.total_energy(&out);
 		(out, SoftBodyAuxData{energy, iterations: 0})
 	}
 	fn differentiate(&self, state: &VDyn, aux_state: &mut SoftBodyAuxData) -> NDimensionalDerivative {
 		let mut derivative = NDimensionalDerivative(VDyn::from_vec(vec![0.0; self.state_representation_vec_size()]));
-		let mut node_i: usize = 0;
-		for x in 0..self.bounding_box.x {
-			for y in 0..self.bounding_box.y {
-				let grid_pos = IntV2::new(x, y);
-				let is_node: bool = self.does_node_exist_at_grid_pos(&grid_pos);
-				if is_node {
-					// Calculate acceleration
-					let force: V2 = self.node_net_force(node_i, grid_pos, state);
-					let acc: V2 = (force / self.settings.node_mass) + V2::new(0.0, self.settings.gravity);
-					let (_, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
-					Self::set_node_vel_and_acc(node_i, vel, acc, &mut derivative);
-					node_i += 1;
-				}
-			}
-		}
+		self.iter_nodes(&mut |grid_pos, node_i| -> () {
+			// Calculate acceleration
+			let force: V2 = self.node_net_force(node_i, grid_pos, state);
+			let acc: V2 = (force / self.settings.node_mass) + V2::new(0.0, self.settings.gravity);
+			let (_, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+			Self::set_node_vel_and_acc(node_i, vel, acc, &mut derivative);
+		});
 		assert_vec_is_finite(&derivative.0).unwrap();
 		aux_state.iterations += 1;
 		// Done
 		derivative
 	}
 	fn set_state(&self, state: &mut VDyn, aux_state: &mut Self::AuxData) {
-		#[cfg(feature = "conservation-of-energy")]
-		if aux_state.iterations % self.settings.iterations_per_energy_correction == 0 {
-			// Enforce conservation of energy. It is the law.
-			assert!(aux_state.energy >= 0.0, "Energy must not be >= 0, otherwise this will cause problems with the energy conservation correction");
-			let ideal_total = aux_state.energy;
-			let (actual_pe, actual_ke) = self.energy(state);
-			let ideal_ke = ideal_total - actual_pe;
-			let energy_ratio = actual_ke / ideal_ke;
-			// Scale velocity for each node to adjust actual KE
-			for node_i in 0..self.num_nodes {
-				let (pos, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
-				let new_vel = vel / energy_ratio.sqrt();// Pretty sure this is correct, TODO: verify
-				Self::generic_set_state(node_i, pos, new_vel, state);
+		if aux_state.iterations % self.settings.iterations_per_correction == 0 {
+			#[cfg(feature = "conservation-of-energy")] {
+				// Enforce conservation of energy. It is the law.
+				assert!(aux_state.energy >= 0.0, "Energy must not be >= 0, otherwise this will cause problems with the energy conservation correction");
+				let ideal_total = aux_state.energy;
+				let (actual_pe, actual_ke) = self.energy(state);
+				let ideal_ke = ideal_total - actual_pe;
+				let energy_ratio = actual_ke / ideal_ke;
+				// Scale velocity for each node to adjust actual KE
+				for node_i in 0..self.num_nodes {
+					let (pos, vel) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
+					let new_vel = vel / energy_ratio.sqrt();// Pretty sure this is correct, TODO: verify
+					Self::generic_set_state(node_i, pos, new_vel, state);
+				}
+			}
+			#[cfg(feature = "local-relative-velocity-averaging")] {
+				self.local_relative_velocity_averaging(state, aux_state);
 			}
 			// Check
 			assert_relative_eq!(self.total_energy(state), aux_state.energy, epsilon = EPSILON);
@@ -337,32 +380,33 @@ pub fn test() {
 		texture_dyn.into_rgba8()
 	};
 	let body = SoftBody::from_bb_inclusion_func(
-		IntV2::new(50, 50),
+		IntV2::new(30, 30),
 		|_| {true},
 		SoftBodySettings {
 			precision: 1.0,
 			node_mass: 0.5,
-			spring_k: 2500.0,
-			spring_damping: 0.0,
+			spring_k: 2000.0,
+			spring_damping: 0.0,// Don't use this
 			gravity: -1.0,
-			ground_k: 100.0,
-			iterations_per_energy_correction: 400
+			ground_k: 200.0,
+			iterations_per_correction: 800,
+			local_relative_velocity_averaging: 0.0// 0.2
 		}
 	);
 	let num_frames: usize = 400;
-	let iterations_per_frame: usize = 1600;
-	let dt = 0.00005;
+	let iterations_per_frame: usize = 1600;// 1600
+	let dt = 0.0001;// 0.00005
 	let background_color = Rgb([0; 3]);
 	let fill_color = Rgb([255; 3]);
 	let image_size = ImgV2::new(750, 750);
 	let translater = ImagePosTranslater {
-		scale: 7.5,
-		origin: V2::new(15.0, 20.0),
+		scale: 15.0,
+		origin: V2::new(10.0, 18.0),
 		image_size
 	};
 	let mut stepper = Stepper::new(body, 10000.0, dt);
 	// Transform body
-	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/8.0), translation: Translation{vector: V2::new(0.0, 1.0)}});
+	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/8.0), translation: Translation{vector: V2::new(0.0, 3.0)}});
 	// Build video creator
 	let mut video_creator = VideoCreator {
 		num_frames,
@@ -417,7 +461,8 @@ mod tests {
 			spring_damping: 1.0,
 			gravity: -9.81,
 			ground_k: 100.0,
-			iterations_per_energy_correction: 400
+			iterations_per_correction: 400,
+			local_relative_velocity_averaging: 0.1
 		}
 	}
 	#[test]
