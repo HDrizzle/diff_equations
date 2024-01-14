@@ -6,6 +6,7 @@ Inspired by: Computers pattern chaos and beauty, by Clifford A Pickover. Pg 216
 use std::{ops, f32::consts::PI};
 use bevy::ecs::system::Resource;
 use nalgebra::{Scalar, Dim, Const, Matrix, VecStorage, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
+use approx::assert_relative_eq;
 
 //pub mod electronics;
 //pub mod gui;
@@ -27,6 +28,12 @@ pub mod prelude {
 	pub type Iso2 = Isometry2<Float>;
 	pub use std::f64::consts::PI;
 	pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
+	pub fn sign(n: Float) -> Int {
+		match n >= 0.0 {
+			true => 1,
+			false => -1
+		}
+	}
 	pub fn imgv2_to_v2(imgv2: ImgV2) -> V2 {
 		V2::new(
 			imgv2.x.into(),
@@ -66,13 +73,11 @@ pub mod prelude {
 	pub fn v2_dot(v1: V2, v2: V2) -> Float {
 		v1.x * v2.x + v1.y * v2.y
 	}
-	pub fn v2_project(v: V2, onto: V2) -> V2 {// From ChatGPT
-		let dot_product = v2_dot(v, onto);
-        let onto_dot_onto = v2_dot(onto, onto);
+	pub fn v2_project(v: V2, onto: V2) -> V2 {// https://www.chasing-carrots.com/the-pragmatical-programmers-guide-to-vectors/
+		let onto_normalized = onto / onto.magnitude();
+		let dot_prod = v2_dot(v, onto_normalized);
 
-        let scalar = dot_product / onto_dot_onto;
-
-        onto * scalar
+        onto_normalized * dot_prod
 	}
 	pub use crate::{
 		NDimensionalDerivative,
@@ -230,4 +235,15 @@ pub fn assert_vec_is_finite(v: &VDyn) -> Result<(), String> {
 		}
 	}
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+	#[test]
+	fn v2_projection() {
+		assert_relative_eq!(v2_project(V2::new(1.0, -2.0), V2::new(1.0, 0.0)), V2::new(1.0, 0.0), epsilon = EPSILON);
+		assert_relative_eq!(v2_project(V2::new(0.0, -10.0), V2::new(-20.0, -20.0)), V2::new(-5.0, -5.0), epsilon = EPSILON);
+		assert_relative_eq!(v2_project(V2::new(-1.0, 4.0), V2::new(4.0, 1.0)), V2::new(0.0, 0.0), epsilon = EPSILON);
+	}
 }

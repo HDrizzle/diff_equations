@@ -163,6 +163,11 @@ impl SoftBody {
 		let length_offset = length - ideal_length;
 		length_offset * self.settings.spring_k
 	}
+	fn spring_force_quadratic(&self, length: Float, ideal_length: Float) -> Float {
+		// Ideal length is 1. + is tension, - is compression
+		let length_offset = length - ideal_length;
+		(length_offset.powi(2) * (sign(length_offset) as Float) + length_offset) * self.settings.spring_k
+	}
 	fn spring_energy(&self, length: Float, ideal_length: Float) -> Float {
 		self.settings.spring_k * 0.5 * (length - ideal_length).powi(2)
 	}
@@ -174,6 +179,7 @@ impl SoftBody {
 	}
 	fn node_net_force(&self, node_i: usize, node_grid_pos: IntV2, state: &VDyn) -> V2 {
 		let mut net_force = V2::zeros();
+		assert_eq!(self.get_node_i_from_grid_pos(&node_grid_pos).expect("Unable to get node index during assertion"), node_i);
 		self.iter_adjacent_nodes(
 			&node_grid_pos,
 			&mut |absolute_grid_pos, grid_offset| -> () {
@@ -239,9 +245,21 @@ impl SoftBody {
 	}
 	fn force_between_nodes(&self, ideal_length: Float, rel_pos: V2, rel_vel: V2) -> V2 {
 		(rel_pos / rel_pos.magnitude()) * (
-			self.spring_force_linear(rel_pos.magnitude(), ideal_length)// Static spring force
-			+ (v2_project(rel_vel, rel_pos).magnitude() * self.settings.spring_damping)// Damping, project rel_vel onto rel_pos and multiply magitude by self.settings.spring_damping
+			self.spring_force_quadratic(rel_pos.magnitude(), ideal_length)// Static spring force
+			+ self.spring_damping_force(rel_pos, rel_vel)// Damping, project rel_vel onto rel_pos and multiply magitude by self.settings.spring_damping
 		)
+	}
+	pub fn spring_damping_force(&self, rel_pos: V2, rel_vel: V2) -> Float {
+		//v2_project(rel_vel, rel_pos).magnitude() * self.settings.spring_damping
+		if rel_vel.magnitude() <= EPSILON || rel_pos.magnitude() <= EPSILON {
+			return 0.0;
+		}
+		let onto_normalized = rel_pos / rel_pos.magnitude();
+		let dot_prod = v2_dot(rel_vel, onto_normalized);
+        match dot_prod.is_finite() {
+			true => dot_prod,
+			false => 0.0
+		}
 	}
 	fn does_node_exist_at_grid_pos(&self, grid_pos: &IntV2) -> bool {
 		self.fill[grid_pos.x as usize][grid_pos.y as usize]
@@ -340,12 +358,12 @@ impl StaticDifferentiator for SoftBody {
 					let new_vel = vel / energy_ratio.sqrt();// Pretty sure this is correct, TODO: verify
 					Self::generic_set_state(node_i, pos, new_vel, state);
 				}
+				// Check
+				assert_relative_eq!(self.total_energy(state), aux_state.energy, epsilon = EPSILON);
 			}
 			#[cfg(feature = "local-relative-velocity-averaging")] {
 				self.local_relative_velocity_averaging(state, aux_state);
 			}
-			// Check
-			assert_relative_eq!(self.total_energy(state), aux_state.energy, epsilon = EPSILON);
 		}
 	}
 }
@@ -380,33 +398,39 @@ pub fn test() {
 		texture_dyn.into_rgba8()
 	};
 	let body = SoftBody::from_bb_inclusion_func(
-		IntV2::new(30, 30),
-		|_| {true},
+		IntV2::new(40, 40),// 30 x 30
+		|grid_pos: IntV2| {
+			let grid_pos_float = intv2_to_v2(grid_pos);
+			let center = V2::new(20.0, 20.0);
+			(grid_pos_float - center).magnitude() <= 20.0
+		},
 		SoftBodySettings {
 			precision: 1.0,
-			node_mass: 0.5,
-			spring_k: 2000.0,
-			spring_damping: 0.0,// Don't use this
-			gravity: -1.0,
-			ground_k: 200.0,
-			iterations_per_correction: 800,
-			local_relative_velocity_averaging: 0.0// 0.2
+			node_mass: 1.0,// 0.7
+			spring_k: 1000.0,// 2000.0
+			spring_damping: 0.17,
+			gravity: -1.0,// -1.0
+			ground_k: 300.0,
+			iterations_per_correction: 800,// 800
+			local_relative_velocity_averaging: 0.0// Don't use
 		}
 	);
 	let num_frames: usize = 400;
-	let iterations_per_frame: usize = 1600;// 1600
-	let dt = 0.0001;// 0.00005
+	let iterations_per_frame: usize = 125;// 250
+	let dt = 0.0016;// 0.0008
 	let background_color = Rgb([0; 3]);
 	let fill_color = Rgb([255; 3]);
 	let image_size = ImgV2::new(750, 750);
 	let translater = ImagePosTranslater {
-		scale: 15.0,
-		origin: V2::new(10.0, 18.0),
+		scale: 12.0,// 15.0
+		origin: V2::new(8.0, 25.0),// 8.0, 20.0
 		image_size
 	};
 	let mut stepper = Stepper::new(body, 10000.0, dt);
 	// Transform body
-	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/8.0), translation: Translation{vector: V2::new(0.0, 3.0)}});
+	//SoftBody::generic_set_state(0, V2::new(-5.0, 0.0), V2::zeros(), &mut stepper.state);// Give nodes opposing velocities from spring damping testing
+	//SoftBody::generic_set_state(1, V2::new(5.0, 0.0), V2::zeros(), &mut stepper.state);
+	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/6.0), translation: Translation{vector: V2::new(0.0, 5.0)}});// PI/6.0, 0.0, 5.0
 	// Build video creator
 	let mut video_creator = VideoCreator {
 		num_frames,
@@ -481,18 +505,31 @@ mod tests {
 		assert_eq!(body.state_representation_vec_size(), 8);
 		assert_eq!(SoftBody::get_node_pos_and_vel_from_state_vec(0, &state), (V2::zeros(), V2::zeros()));
 		assert_eq!(SoftBody::get_node_pos_and_vel_from_state_vec(1, &state), (V2::new(1.0, 0.0), V2::zeros()));
+		// ----------------------- Spring force (-kx) -----------------------
 		// 1
 		// Change 2nd node to be 2 units away from the first one
 		SoftBody::generic_set_state(1, V2::new(2.0, 0.0), V2::zeros(), &mut state);
 		// Calculate force
-		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(-15.0, 0.0));
+		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(-30.0, 0.0));
 		// 2
 		// Change 2nd node to be 0.5 units away from the first one
 		SoftBody::generic_set_state(1, V2::new(0.5, 0.0), V2::zeros(), &mut state);
 		// Calculate force
-		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(7.5, 0.0));
+		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(15.0 * 0.75, 0.0));
+		// ----------------------- Spring damping -----------------------
+		// 3
+		// Change 2nd node to be at preferable distance (precision = 1 unit) away from 1st one, but it has a velocity going away from it
+		SoftBody::generic_set_state(1, V2::new(1.0, 0.0), V2::new(3.0, 1000.0), &mut state);// that big Y velocity shouldn't affect anything
+		// Calculate force
+		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(-3.0, 0.0));
+		// 4
+		// Opposite velocity from previous test
+		SoftBody::generic_set_state(1, V2::new(1.0, 0.0), V2::new(-3.0, 1000.0), &mut state);// that big Y velocity shouldn't affect anything
+		// Calculate force
+		assert_eq!(body.node_net_force(1, IntV2::new(1, 0), &state), V2::new(3.0, 0.0));
 	}
 	#[test]
+	#[cfg(feature = "conservation-of-energy")]
 	fn energy() {
 		let settings = soft_body_settings();
 		let body = SoftBody::from_bb_inclusion_func(IntV2::new(1, 2), |_| {true}, settings.clone());
