@@ -7,6 +7,7 @@ use std::{ops, f32::consts::PI};
 use bevy::ecs::system::Resource;
 use nalgebra::{Scalar, Dim, Const, Matrix, VecStorage, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
 use approx::assert_relative_eq;
+use geo::geometry::Coord;
 
 //pub mod electronics;
 //pub mod gui;
@@ -27,7 +28,34 @@ pub mod prelude {
 	pub type IntV2 = Vector2<Int>;
 	pub type Iso2 = Isometry2<Float>;
 	pub use std::f64::consts::PI;
-	pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
+	use geo::Coord;
+pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
+	/*pub fn is_point_inside_triangle(p: IntV2, a: IntV2, b: IntV2, c: IntV2) -> bool {
+		is_point_inside_triangle_counter_clockwise(p, a, b, c) || is_point_inside_triangle_counter_clockwise(p, b, a, c)// one is reversed, so it should work both ways
+	}
+	pub fn is_point_inside_triangle_counter_clockwise(p: IntV2, a: IntV2, b: IntV2, c: IntV2) -> bool {// From ChatGPT
+		// Calculate barycentric coordinates
+		let v0 = b - a;
+		let v1 = c - a;
+		let v2 = p - a;
+	
+		let dot00 = v0.x * v0.x + v0.y * v0.y;
+		let dot01 = v0.x * v1.x + v0.y * v1.y;
+		let dot02 = v0.x * v2.x + v0.y * v2.y;
+		let dot11 = v1.x * v1.x + v1.y * v1.y;
+		let dot12 = v1.x * v2.x + v1.y * v2.y;
+	
+		// Compute barycentric coordinates
+		let inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01) as Float;
+		let u = (dot11 * dot02 - dot01 * dot12) as Float * inv_denom;
+		let v = (dot00 * dot12 - dot01 * dot02) as Float * inv_denom;
+	
+		// Check if the point is inside the triangle
+		(u >= 0.0) && (v >= 0.0) && (u + v <= 1.0)
+	}*/
+	pub fn v2_to_geo_coord(v: V2) -> Coord<Float> {
+		Coord{x: v.x, y: v.y}
+	}
 	pub fn sign(n: Float) -> Int {
 		match n >= 0.0 {
 			true => 1,
@@ -191,16 +219,25 @@ impl ImagePosTranslater {
 	pub fn world_to_px(
 		&self,
 		input: V2,
-	) -> Option<ImgV2> {
-		// Returns Some(_) if position is inside image
+	) -> (IntV2, bool) {
+		// Returns (Image pos, whether pos is on image)
 		let center = self.image_size / 2;
 		let final_y_up = v2_to_intv2((input - self.origin) * self.scale) + imgv2_to_intv2(center);
 		let px_pos = IntV2::new(final_y_up.x, self.image_size.y as Int - final_y_up.y);
 		let (x, y) = (px_pos.x, px_pos.y);
-		match x < self.image_size.x as Int && x >= 0 && y < self.image_size.y as Int && y >= 0 {
-			true => Some(intv2_to_imgv2(px_pos)),
-			false => None
-		}
+		(
+			px_pos,
+			x < self.image_size.x as Int && x >= 0 && y < self.image_size.y as Int && y >= 0
+		)
+	}
+	pub fn px_to_world(
+		&self,
+		px_int: IntV2,
+	) -> V2 {
+		let px_y_down = intv2_to_v2(px_int);
+		let px = V2::new(px_y_down.x, self.image_size.y as Float - px_y_down.y);
+		let center = imgv2_to_v2(self.image_size / 2);
+		((px - center) / self.scale) + self.origin
 	}
 }
 
@@ -216,9 +253,9 @@ pub fn render_image<T: StaticDifferentiator>(
 	for _ in 0..num_iterations {
 		stepper.step();
 		let pos = plot_indices.get_plot_variables(&stepper.state);
-		match translater.world_to_px(V2::new(pos[0], pos[1])) {
-			Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
-			None => {}
+		let (px_pos, is_on_image) = translater.world_to_px(V2::new(pos[0], pos[1]));
+		if is_on_image {
+			image.put_pixel(px_pos.x as u32, px_pos.y as u32, fill_color);
 		}
 		/*let px_pos = to_px(V2::new(pos[0], pos[1]));
 		let (x, y) = (px_pos.x, px_pos.y);
@@ -245,5 +282,21 @@ mod tests {
 		assert_relative_eq!(v2_project(V2::new(1.0, -2.0), V2::new(1.0, 0.0)), V2::new(1.0, 0.0), epsilon = EPSILON);
 		assert_relative_eq!(v2_project(V2::new(0.0, -10.0), V2::new(-20.0, -20.0)), V2::new(-5.0, -5.0), epsilon = EPSILON);
 		assert_relative_eq!(v2_project(V2::new(-1.0, 4.0), V2::new(4.0, 1.0)), V2::new(0.0, 0.0), epsilon = EPSILON);
+	}
+	mod image_translation {
+		use super::*;
+		fn new_translater() -> ImagePosTranslater {
+			ImagePosTranslater{
+				scale: 150.0,
+				origin: V2::new(10.0, 20.0),
+				image_size: ImgV2::new(500, 500)
+			}
+		}
+		#[test]
+		fn composition() {
+			let translater = new_translater();
+			assert_eq!(translater.px_to_world(translater.world_to_px(V2::zeros()).0), V2::zeros());
+			assert_eq!(translater.world_to_px(translater.px_to_world(IntV2::new(30, 40))).0, IntV2::new(30, 41));// fine
+		}
 	}
 }

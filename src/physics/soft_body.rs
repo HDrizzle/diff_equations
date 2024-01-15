@@ -4,6 +4,8 @@ use bevy::text;
 use nalgebra::{UnitComplex, Translation, Dyn, SimdValue};
 use approx::assert_relative_eq;
 use image::{RgbaImage, GenericImageView};
+use geo::{Contains, geometry::{Triangle, Coord}};
+use nalgebra::{base::Matrix, Const, Vector3};
 
 use crate::prelude::*;
 
@@ -44,7 +46,8 @@ pub struct SoftBody {// Simulates a grid of "nodes" (points with mass) connected
 	bounding_box: IntV2,
 	fill: Vec<Vec<bool>>,// [[value; Y]; X], whether a given location on the grid is occupied
 	num_nodes: usize,
-	node_index_lookup: HashMap<IntV2, usize>
+	node_index_lookup: HashMap<IntV2, usize>/*,
+	triangles: Vec<[IntV2; 3]>*/
 }
 
 impl SoftBody {
@@ -153,11 +156,7 @@ impl SoftBody {
 		state[start + 2] = v2.x;
 		state[start + 3] = v2.y;
 	}
-	/*fn spring_force_ratio(&self, length: Float) -> Float {
-		// Ideal length is 1. + is tension, - is compression
-		let length_corrected = length - 1.0;
-		length_corrected * self.settings.spring_k
-	}*/
+	#[deprecated]
 	fn spring_force_linear(&self, length: Float, ideal_length: Float) -> Float {
 		// Ideal length is 1. + is tension, - is compression
 		let length_offset = length - ideal_length;
@@ -168,6 +167,7 @@ impl SoftBody {
 		let length_offset = length - ideal_length;
 		(length_offset.powi(2) * (sign(length_offset) as Float) + length_offset) * self.settings.spring_k
 	}
+	#[deprecated]
 	fn spring_energy(&self, length: Float, ideal_length: Float) -> Float {
 		self.settings.spring_k * 0.5 * (length - ideal_length).powi(2)
 	}
@@ -268,22 +268,205 @@ impl SoftBody {
 		self.iter_nodes(&mut |grid_pos, node_i| -> () {
 			#[cfg(feature = "node-point-rendering")] {
 				let (pos, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
-				match translater.world_to_px(pos) {
-					Some(px_pos) => image.put_pixel(px_pos.x, px_pos.y, fill_color),
-					None => {}
+				let (px_pos, is_on_image) = translater.world_to_px(pos);
+				if is_on_image {
+					image.put_pixel(px_pos.x as u32, px_pos.y as u32, fill_color);
 				}
 			}
 			#[cfg(feature = "texture-rendering")] {
-				
+				// TODO
 			}
 		});
 		// Ground
-		let ground_px_y = translater.world_to_px(V2::zeros()).expect("Expected world origin to be on the image, this is not the greatest code though so it could get broken").y;
+		let (origin_px, is_on_image) = translater.world_to_px(V2::zeros());
+		if is_on_image {
+			for px_x in 0..image.width() {
+				image.put_pixel(px_x, origin_px.y as u32, Rgb([255; 3]));
+			}
+		}
+		
+	}
+	#[cfg(feature = "texture-rendering")]
+	fn render_fragment(&self, state: &VDyn, node_indices: [usize; 3], node_grid_positions: [IntV2; 3], image: &mut RgbImage, texture: &RgbaImage, translater: &ImagePosTranslater) {
+		/*let texture_to_grid = |img_pos: IntV2| -> V2 {
+			let img_pos_y_up = IntV2::new(img_pos.x, texture.height() as Int - img_pos.y);
+			let img_pos_float = intv2_to_v2(img_pos_y_up);
+			let (grid_x, grid_y) = (
+				(img_pos_float.x / texture.width() as Float) * self.bounding_box.x as Float,
+				(img_pos_float.y / texture.height() as Float) * self.bounding_box.y as Float
+			);
+			V2::new(grid_x, grid_y)
+		};*/
+		// Find right angle vertex, opposite to hypotinuse in grid space <- this might be useless
+		/*let mut right_angle_local_node_i_opt: Option<usize> = None;
+		for local_node_i in 0..3 {
+			let curr_node_grid_pos = node_grid_positions[local_node_i];
+			let mut matching_coord_index_opt: Option<u8> = None;
+			for coord_index in 0..2 {// (X, Y)
+				for other_local_node_i_raw in 0..2 {// Two other nodes
+					let other_local_node_i = (local_node_i + other_local_node_i_raw + 1) % 3;
+					if node_grid_positions[local_node_i][coord_index] == node_grid_positions[other_local_node_i][coord_index] {
+						if let Some(_) = matching_coord_index_opt {
+							panic!("two coordinates matching for different node grid positions, this must mean that they are identical");
+						}
+						matching_coord_index_opt = Some(coord_index);
+					}
+				}
+			}
+			match matching_coord_index_opt {
+				Some(matching_coord) => 
+			}
+		}*/
+		/*// Array of node positions translated to px positions
+		let mut node_px_positions: [IntV2; 3] = [IntV2::zeros(); 3];
+		let mut node_world_positions = [V2::zeros(); 3];
+		for node_i in &node_indices {
+			let world_pos = Self::get_node_pos_and_vel_from_state_vec(*node_i, state).0;
+			node_world_positions[*node_i] = world_pos;
+			let img_pos = translater.world_to_px(world_pos).0;
+			node_px_positions[*node_i] = img_pos;
+		}
+		// Find bounding box of fragment on result image
+		let (mut output_bb_mins, mut output_bb_maxs) = (IntV2::zeros(), IntV2::zeros());// Bounding box of output fragment in px
+		for local_node_i in &node_indices {
+			let img_pos = node_px_positions[*local_node_i];
+			// Min
+			for c_i in 0..2 {
+				let curr = output_bb_mins[c_i];
+				let new = img_pos[c_i];
+				output_bb_mins[c_i] = curr.min(new);
+			};
+			// Max
+			for c_i in 0..2 {
+				let curr = output_bb_mins[c_i];
+				let new = img_pos[c_i];
+				output_bb_maxs[c_i] = curr.max(new);
+			};
+		}
+		// Loop over all (x, y) in result bb and check if coordinate is within fragment triangle, if so then find corresponding texture px and put it on result
+		for px_x in output_bb_mins.x..output_bb_maxs.x {
+			for px_y in output_bb_mins.y..output_bb_maxs.y {
+				let output_px_pos = IntV2::new(px_x, px_y);
+				if is_point_inside_triangle(
+					output_px_pos,
+					node_px_positions[0],
+					node_px_positions[1],
+					node_px_positions[2]
+				) {// Output pixel position is inside triangle to be rendered
+					let world_pos = translater.px_to_world(output_px_pos);
+					// Calculate distances to each node in world space
+					// Find X and Y "slope"
+					let a_grid_pos = node_grid_positions[0];
+					let mut relative_grid_positions = [IntV2::zeros(); 3];
+					relative_grid_positions[1] = node_grid_positions[1] - a_grid_pos;
+					relative_grid_positions[2] = node_grid_positions[2] - a_grid_pos;
+				}
+			}
+		}*/
+		/*// New plan: iterate over texture image pixels and map them onto result image
+		for grid_x in 0..self.bounding_box.x {
+			for grid_y in 0..self.bounding_box.x {
+				let base_grid_pos = intv2_to_v2(IntV2::new(grid_x, grid_y));
+				// TODO
+			}
+		}*/
+		/* Even newer plan: For each px on result image:
+			* Use translater.px_to_world() to get world position of pixel
+			* Find corresponding triangle from distorted grid in world space
+			* Use barycentric coordinates to map location into grid space
+			* Find closest px on texture image from grid space
+		*/
+		let grid_to_texture = |grid_pos_float: V2| -> IntV2 {
+			// TODO
+		};
+		let mut triangles = Vec::<[V2; 3]>::new();// TODO: cache this for performance increase
+		let mut grid_triangles = Vec::<[V2; 3]>::new();// TODO: cache this for performance increase
+		self.iter_node_triangles(&mut |grid_tri: [IntV2; 3]| {
+			let mut triangle: [V2; 3] = [V2::zeros(); 3];
+			let mut grid_triangle_float: [V2; 3] = [V2::zeros(); 3];
+			for i in 0..3 {
+				triangle[i] = Self::get_node_pos_and_vel_from_state_vec(self.get_node_i_from_grid_pos(&grid_tri[i]).expect("Could not get node index"), state).0;
+				grid_triangle_float[i] = intv2_to_v2(grid_tri[i]);
+			}
+			grid_triangles.push(grid_triangle_float);
+			triangles.push(triangle);
+			/*.push([
+				intv2_to_v2(tri[0]),
+				intv2_to_v2(tri[1]),
+				intv2_to_v2(tri[2])
+			]);*/
+		});
 		for px_x in 0..image.width() {
-			image.put_pixel(px_x, ground_px_y, Rgb([255; 3]));
+			for px_y in 0..image.height() {
+				let px_pos = IntV2::new(px_x as Int, px_y as Int);
+				let world_pos = translater.px_to_world(px_pos);
+				let mut matching_triangle_index_opt: Option<usize> = None;
+				for (tri_index, tri) in triangles.iter().enumerate() {
+					if Triangle(v2_to_geo_coord(tri[0]), v2_to_geo_coord(tri[1]), v2_to_geo_coord(tri[2])).contains(&v2_to_geo_coord(world_pos)) {// Don't try this at home
+						matching_triangle_index_opt = Some(tri_index);
+					}
+				}
+				match matching_triangle_index_opt {
+					Some(matching_triangle_index) => {
+						// Barycentric coordinates
+						let tri: [V2; 3] = triangles[matching_triangle_index];
+						// Get lambda values
+						let mat = Matrix::<Float, Const<3>, Const<3>, nalgebra::ArrayStorage<Float, 3, 3>>::new(
+							1.0, 1.0, 1.0,
+							tri[0].x, tri[1].x, tri[2].x,
+							tri[0].y, tri[1].y, tri[2].y
+						);
+						let lambda_vec_opt: Option<Vector3<Float>> = mat.lu().solve(&Vector3::<Float>::new(1.0, world_pos.x, world_pos.y));// Just hope this works
+						// Get corresponding grid position using grid_triangles[matching_triangle_index] and lambdas
+						match lambda_vec_opt {
+							Some(lambda_vec) => {
+								let grid_tri: [V2; 3] = grid_triangles[matching_triangle_index];
+								// Get float grid pos of pixel
+								let px_float_grid_pos = V2::new();// TODO
+								let px_pos = grid_to_texture(px_float_grid_pos);
+								// TODO: get pixel from texture and put on result image
+							},
+							None => panic!("Couldn't get lambda values for barycentric coordinates")
+						}
+					},
+					None => {}// Px is not on mesh
+				}
+			}
 		}
 	}
-	/// Iterate over each node in the grid and run `func`. `func` should take (grid pos, node index)
+	/// Iterate over each triangle in the grid (2 per grid cell) and run `func` on each one. `func` should take [grid pos; 3]
+	fn iter_node_triangles(&self, func: &mut impl FnMut([IntV2; 3]) -> ()) {
+		// Vec of bottom-left grid positions that aren't on the top or right of the bounding box
+		let mut cell_positions = Vec::<IntV2>::new();
+		self.iter_nodes(&mut |grid_pos: IntV2, _| {
+			if grid_pos.x < self.bounding_box.x - 1 && grid_pos.y < self.bounding_box.y - 1 {
+				cell_positions.push(grid_pos);
+			}
+		});
+		for cell_position in cell_positions {
+			for triangle_orientation in 0..2 {
+				let triangle_grid_vertices: [IntV2; 3] = match triangle_orientation {
+					0 => [// bottom-left
+						// TODO
+					],
+					1 => [// top-right
+						// TODO
+					],
+					_ => panic!("Impossible state")
+				};
+				let mut all_nodes_exist = true;
+				for triangle_grid_pos in triangle_grid_vertices {
+					if !self.does_node_exist_at_grid_pos(&triangle_grid_pos) {
+						all_nodes_exist = false;
+					}
+				}
+				if all_nodes_exist {
+					func(triangle_grid_vertices);
+				}
+			}
+		}
+	}
+	/// Iterate over each node in the grid and run `func` on each one. `func` should take (grid pos, node index)
 	fn iter_nodes(&self, func: &mut impl FnMut(IntV2, usize) -> ()) {
 		let mut node_i: usize = 0;
 		for x in 0..self.bounding_box.x {
@@ -398,19 +581,20 @@ pub fn test() {
 		texture_dyn.into_rgba8()
 	};
 	let body = SoftBody::from_bb_inclusion_func(
-		IntV2::new(40, 40),// 30 x 30
+		IntV2::new(80, 80),// 30 x 30
 		|grid_pos: IntV2| {
+			//return true;// Comment out for circle
 			let grid_pos_float = intv2_to_v2(grid_pos);
-			let center = V2::new(20.0, 20.0);
-			(grid_pos_float - center).magnitude() <= 20.0
+			let center = V2::new(40.0, 40.0);
+			(grid_pos_float - center).magnitude() < 40.0
 		},
 		SoftBodySettings {
-			precision: 1.0,
-			node_mass: 1.0,// 0.7
-			spring_k: 1000.0,// 2000.0
-			spring_damping: 0.17,
+			precision: 0.5,
+			node_mass: 0.25,// 0.7
+			spring_k: 500.0,// 2000.0
+			spring_damping: 0.25,
 			gravity: -1.0,// -1.0
-			ground_k: 300.0,
+			ground_k: 200.0,
 			iterations_per_correction: 800,// 800
 			local_relative_velocity_averaging: 0.0// Don't use
 		}
@@ -423,14 +607,14 @@ pub fn test() {
 	let image_size = ImgV2::new(750, 750);
 	let translater = ImagePosTranslater {
 		scale: 12.0,// 15.0
-		origin: V2::new(8.0, 25.0),// 8.0, 20.0
+		origin: V2::new(8.0, 27.0),// 8.0, 27.0
 		image_size
 	};
 	let mut stepper = Stepper::new(body, 10000.0, dt);
 	// Transform body
 	//SoftBody::generic_set_state(0, V2::new(-5.0, 0.0), V2::zeros(), &mut stepper.state);// Give nodes opposing velocities from spring damping testing
 	//SoftBody::generic_set_state(1, V2::new(5.0, 0.0), V2::zeros(), &mut stepper.state);
-	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/6.0), translation: Translation{vector: V2::new(0.0, 5.0)}});// PI/6.0, 0.0, 5.0
+	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/6.0), translation: Translation{vector: V2::new(0.0, 8.0)}});// PI/6.0, 0.0, 8.0
 	// Build video creator
 	let mut video_creator = VideoCreator {
 		num_frames,
