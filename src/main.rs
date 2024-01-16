@@ -2,6 +2,7 @@
 #![allow(warnings)]
 use diff_equations::prelude::*;
 use nalgebra::max;
+use image::{Rgb, RgbImage, ImageBuffer};
 
 fn create_image() {
 	let background = Rgb([0; 3]);

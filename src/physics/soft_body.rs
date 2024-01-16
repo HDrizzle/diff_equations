@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bevy::text;
 use nalgebra::{UnitComplex, Translation, Dyn, SimdValue};
 use approx::assert_relative_eq;
-use image::{RgbaImage, GenericImageView};
+use image::{RgbaImage, RgbImage, GenericImageView, Rgb, Rgba, io::Reader, ImageBuffer, Pixel};
 use geo::{Contains, geometry::{Triangle, Coord}};
 use nalgebra::{base::Matrix, Const, Vector3};
 
@@ -273,9 +273,6 @@ impl SoftBody {
 					image.put_pixel(px_pos.x as u32, px_pos.y as u32, fill_color);
 				}
 			}
-			#[cfg(feature = "texture-rendering")] {
-				// TODO
-			}
 		});
 		// Ground
 		let (origin_px, is_on_image) = translater.world_to_px(V2::zeros());
@@ -284,10 +281,13 @@ impl SoftBody {
 				image.put_pixel(px_x, origin_px.y as u32, Rgb([255; 3]));
 			}
 		}
-		
+		// Texture
+		#[cfg(feature = "texture-rendering")] {
+			self.render_texture(state, image, texture, translater);
+		}
 	}
 	#[cfg(feature = "texture-rendering")]
-	fn render_fragment(&self, state: &VDyn, node_indices: [usize; 3], node_grid_positions: [IntV2; 3], image: &mut RgbImage, texture: &RgbaImage, translater: &ImagePosTranslater) {
+	fn render_texture(&self, state: &VDyn, image: &mut RgbImage, texture: &RgbaImage, translater: &ImagePosTranslater) {
 		/*let texture_to_grid = |img_pos: IntV2| -> V2 {
 			let img_pos_y_up = IntV2::new(img_pos.x, texture.height() as Int - img_pos.y);
 			let img_pos_float = intv2_to_v2(img_pos_y_up);
@@ -376,11 +376,19 @@ impl SoftBody {
 			* Use barycentric coordinates to map location into grid space
 			* Find closest px on texture image from grid space
 		*/
-		let grid_to_texture = |grid_pos_float: V2| -> IntV2 {
-			// TODO
+		let tx_width_int = texture.width() as Int;
+		let tx_height_int = texture.height() as Int;
+		let grid_to_texture = |grid_pos_float: V2| -> ImgV2 {// TODO: check
+			let px_x_unclamped = ((grid_pos_float.x / (self.bounding_box.x as Float)) * (texture.width() as Float)) as Int;
+			let px_y_unclamped = tx_height_int - ((grid_pos_float.y / (self.bounding_box.y as Float)) * (texture.height() as Float)) as Int;
+			ImgV2::new(
+				(px_x_unclamped.max(0).min(tx_width_int - 1)) as u32,
+				(px_y_unclamped.max(0).min(tx_height_int - 1)) as u32
+			)
 		};
 		let mut triangles = Vec::<[V2; 3]>::new();// TODO: cache this for performance increase
 		let mut grid_triangles = Vec::<[V2; 3]>::new();// TODO: cache this for performance increase
+		//println!("Creating triangles");
 		self.iter_node_triangles(&mut |grid_tri: [IntV2; 3]| {
 			let mut triangle: [V2; 3] = [V2::zeros(); 3];
 			let mut grid_triangle_float: [V2; 3] = [V2::zeros(); 3];
@@ -396,6 +404,7 @@ impl SoftBody {
 				intv2_to_v2(tri[2])
 			]);*/
 		});
+		//println!("Iterating over each px in result image");
 		for px_x in 0..image.width() {
 			for px_y in 0..image.height() {
 				let px_pos = IntV2::new(px_x as Int, px_y as Int);
@@ -422,9 +431,14 @@ impl SoftBody {
 							Some(lambda_vec) => {
 								let grid_tri: [V2; 3] = grid_triangles[matching_triangle_index];
 								// Get float grid pos of pixel
-								let px_float_grid_pos = V2::new();// TODO
-								let px_pos = grid_to_texture(px_float_grid_pos);
-								// TODO: get pixel from texture and put on result image
+								let float_grid_pos =
+									lambda_vec.x * grid_tri[0]
+									+ lambda_vec.y * grid_tri[1]
+									+ lambda_vec.z * grid_tri[2];
+								let texture_px_pos: ImgV2 = grid_to_texture(float_grid_pos);
+								// Get pixel from texture and put on result image
+								let texture_px: &Rgba<u8> = texture.get_pixel(texture_px_pos.x, texture_px_pos.y);
+								image.put_pixel(px_pos.x as u32, px_pos.y as u32, texture_px.to_rgb());
 							},
 							None => panic!("Couldn't get lambda values for barycentric coordinates")
 						}
@@ -433,6 +447,7 @@ impl SoftBody {
 				}
 			}
 		}
+		//println!("Done rendering texture");
 	}
 	/// Iterate over each triangle in the grid (2 per grid cell) and run `func` on each one. `func` should take [grid pos; 3]
 	fn iter_node_triangles(&self, func: &mut impl FnMut([IntV2; 3]) -> ()) {
@@ -444,13 +459,19 @@ impl SoftBody {
 			}
 		});
 		for cell_position in cell_positions {
+			let x = cell_position.x;
+			let y = cell_position.y;
 			for triangle_orientation in 0..2 {
 				let triangle_grid_vertices: [IntV2; 3] = match triangle_orientation {
 					0 => [// bottom-left
-						// TODO
+						IntV2::new(x, y),
+						IntV2::new(x + 1, y),
+						IntV2::new(x, y + 1)
 					],
 					1 => [// top-right
-						// TODO
+						IntV2::new(x + 1, y + 1),
+						IntV2::new(x, y + 1),
+						IntV2::new(x + 1, y)
 					],
 					_ => panic!("Impossible state")
 				};
@@ -575,21 +596,20 @@ impl<'a> Iterator for NodeIterator<'a> {
 pub fn test() {
 	// Use this command to generate video: $ ffmpeg -framerate 30 -i soft_body_render_%d.png -vcodec libx264 -r 30 -pix_fmt yuv420p output.mp4
 	// Texture image
-	#[cfg(feature = "texture-rendering")]
 	let texture = {// Current texture is 176 x 493, scaling for height = 100, width = 36
 		let texture_dyn = Reader::open(format!("{}texture.png", MEDIA_DIR)).unwrap().decode().unwrap();
 		texture_dyn.into_rgba8()
 	};
-	let body = SoftBody::from_bb_inclusion_func(
-		IntV2::new(80, 80),// 30 x 30
-		|grid_pos: IntV2| {
+	let body = SoftBody::from_rgba_image(
+		IntV2::new(36, 100),// 80 x 80
+		/*|grid_pos: IntV2| {
 			//return true;// Comment out for circle
 			let grid_pos_float = intv2_to_v2(grid_pos);
 			let center = V2::new(40.0, 40.0);
 			(grid_pos_float - center).magnitude() < 40.0
-		},
+		}*/&texture,
 		SoftBodySettings {
-			precision: 0.5,
+			precision: 1.0,// 0.5
 			node_mass: 0.25,// 0.7
 			spring_k: 500.0,// 2000.0
 			spring_damping: 0.25,
@@ -599,22 +619,22 @@ pub fn test() {
 			local_relative_velocity_averaging: 0.0// Don't use
 		}
 	);
-	let num_frames: usize = 400;
+	let num_frames: usize = 400;// 400
 	let iterations_per_frame: usize = 125;// 250
 	let dt = 0.0016;// 0.0008
 	let background_color = Rgb([0; 3]);
 	let fill_color = Rgb([255; 3]);
 	let image_size = ImgV2::new(750, 750);
 	let translater = ImagePosTranslater {
-		scale: 12.0,// 15.0
-		origin: V2::new(8.0, 27.0),// 8.0, 27.0
+		scale: 7.0,// 12.0
+		origin: V2::new(18.0, 50.0),// 8.0, 27.0
 		image_size
 	};
 	let mut stepper = Stepper::new(body, 10000.0, dt);
 	// Transform body
 	//SoftBody::generic_set_state(0, V2::new(-5.0, 0.0), V2::zeros(), &mut stepper.state);// Give nodes opposing velocities from spring damping testing
 	//SoftBody::generic_set_state(1, V2::new(5.0, 0.0), V2::zeros(), &mut stepper.state);
-	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(PI/6.0), translation: Translation{vector: V2::new(0.0, 8.0)}});// PI/6.0, 0.0, 8.0
+	stepper.differentiator.apply_iso(&mut stepper.state, &mut stepper.aux_state, Iso2{rotation: UnitComplex::from_angle(0.0), translation: Translation{vector: V2::new(0.0, 1.0)}});// PI/6.0, 0.0, 8.0
 	// Build video creator
 	let mut video_creator = VideoCreator {
 		num_frames,

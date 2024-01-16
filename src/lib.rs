@@ -8,6 +8,7 @@ use bevy::ecs::system::Resource;
 use nalgebra::{Scalar, Dim, Const, Matrix, VecStorage, base::{Vector2, Vector3, OVector, dimension::Dyn}, Isometry2};
 use approx::assert_relative_eq;
 use geo::geometry::Coord;
+pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
 
 //pub mod electronics;
 //pub mod gui;
@@ -29,7 +30,6 @@ pub mod prelude {
 	pub type Iso2 = Isometry2<Float>;
 	pub use std::f64::consts::PI;
 	use geo::Coord;
-pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
 	/*pub fn is_point_inside_triangle(p: IntV2, a: IntV2, b: IntV2, c: IntV2) -> bool {
 		is_point_inside_triangle_counter_clockwise(p, a, b, c) || is_point_inside_triangle_counter_clockwise(p, b, a, c)// one is reversed, so it should work both ways
 	}
@@ -53,7 +53,7 @@ pub use image::{RgbImage, ImageBuffer, Rgb, io::Reader, DynamicImage};
 		// Check if the point is inside the triangle
 		(u >= 0.0) && (v >= 0.0) && (u + v <= 1.0)
 	}*/
-	pub fn v2_to_geo_coord(v: V2) -> Coord<Float> {
+	pub fn v2_to_geo_coord(v: V2) -> Coord<Float> {	
 		Coord{x: v.x, y: v.y}
 	}
 	pub fn sign(n: Float) -> Int {
