@@ -8,6 +8,9 @@ use geo::{Contains, geometry::{Triangle, Coord}};
 use nalgebra::{base::Matrix, Const, Vector3};
 
 use crate::prelude::*;
+#[cfg(feature = "gpu-utilization")]
+use super::speeed;
+use super::speeed::GPUHandler;
 
 #[derive(Clone)]
 pub struct SoftBodySettings {
@@ -264,7 +267,15 @@ impl SoftBody {
 	fn does_node_exist_at_grid_pos(&self, grid_pos: &IntV2) -> bool {
 		self.fill[grid_pos.x as usize][grid_pos.y as usize]
 	}
-	pub fn render_image(&self, state: &VDyn, image: &mut RgbImage, #[cfg(feature = "texture-rendering")] texture: &RgbaImage, fill_color: Rgb<u8>, translater: &ImagePosTranslater) {
+	pub fn render_image(
+		&self,
+		state: &VDyn,
+		image: &mut RgbImage,
+		#[cfg(feature = "texture-rendering")] texture: &RgbaImage,
+		fill_color: Rgb<u8>,
+		translater: &ImagePosTranslater,
+		#[cfg(feature = "gpu-utilization")] gpu_handler: &GPUHandler
+	) {
 		self.iter_nodes(&mut |grid_pos, node_i| -> () {
 			#[cfg(feature = "node-point-rendering")] {
 				let (pos, _) = Self::get_node_pos_and_vel_from_state_vec(node_i, state);
@@ -283,7 +294,10 @@ impl SoftBody {
 		}
 		// Texture
 		#[cfg(feature = "texture-rendering")] {
+			#[cfg(not(feature = "gpu-utilization"))]
 			self.render_texture(state, image, texture, translater);
+			#[cfg(feature = "gpu-utilization")]
+			gpu_handler.render_texture(state, image, texture, translater);
 		}
 	}
 	#[cfg(feature = "texture-rendering")]
@@ -664,6 +678,8 @@ pub struct VideoCreator {
 
 impl VideoCreator {
 	pub fn create(&mut self) {
+		#[cfg(feature = "gpu-utilization")]
+		let gpu_handler = GPUHandler::new(/*"texture_shader"*/).unwrap();
 		for i in 0..self.num_frames {
 			// Step
 			for _ in 0..self.iterations_per_frame {
@@ -671,7 +687,13 @@ impl VideoCreator {
 			}
 			// Render image
 			let mut image: RgbImage = ImageBuffer::from_pixel(self.image_size.x, self.image_size.y, self.background_color);
-			self.stepper.differentiator.render_image(&self.stepper.state, &mut image, #[cfg(feature = "texture-rendering")] &self.texture, self.fill_color, &self.translater);
+			self.stepper.differentiator.render_image(
+				&self.stepper.state,
+				&mut image,
+				#[cfg(feature = "texture-rendering")] &self.texture,
+				self.fill_color, &self.translater,
+				#[cfg(feature = "gpu-utilization")] &gpu_handler
+			);
 			// Save image
 			image.save(&format!("{}soft_body_render_{}.png", MEDIA_DIR, i));
 		}

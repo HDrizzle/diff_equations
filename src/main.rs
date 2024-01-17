@@ -1,6 +1,6 @@
 // Most functionality is in lib.rs, this is only for playing around
 #![allow(warnings)]
-use diff_equations::prelude::*;
+use diff_equations::{prelude::*, physics};
 use nalgebra::max;
 use image::{Rgb, RgbImage, ImageBuffer};
 
@@ -51,5 +51,6 @@ fn debug_print() {
 }
 
 fn main() {
-	soft_body::test();
+	//soft_body::test();
+	physics::speeed::mandelbrot_test();
 }

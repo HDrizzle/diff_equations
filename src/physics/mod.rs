@@ -2,6 +2,8 @@
 use crate::prelude::*;
 
 pub mod soft_body;
+#[cfg(feature = "gpu-utilization")]
+pub mod speeed;
 
 #[derive(Clone)]
 pub struct StaticSpringAndMass {
